@@ -1,12 +1,26 @@
 
+import os
+os.environ["KERAS_BACKEND"] = "torch"   # must be set before `import keras`
+
+import glob
 import numpy as np
 from numpy.linalg import cholesky, inv, norm, pinv, lstsq
 from scipy.spatial.distance import cdist
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, spearmanr, iqr
 
+from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import DotProduct, RBF, Matern, RationalQuadratic, ExpSineSquared, WhiteKernel, ConstantKernel, Kernel, Hyperparameter
 from sklearn.svm import SVR, SVC
+from sklearn.neighbors import BallTree
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+import keras
+from keras import layers
+import torch
+from keras import optimizers, losses, metrics
 
 class Model:
     def __init__(self, args):
@@ -44,8 +58,14 @@ class Model:
             model = QuadraticRegression()
         elif model_name == "LQModel":
             model = LQModel()
+        elif model_name == "MyModel":
+            model = MyModel(self.args.problem_id, self.args.load_metadata, self.args.save_metadata)
+        elif model_name == "PFNModel":
+            model = PFNModel()
         elif model_name == "LocalQuadraticModel":
             model = LocalQuadraticModel()
+        elif model_name == "LocalNeuralModel":
+            model = LocalNeuralModel()
             
         return model
 
@@ -88,9 +108,12 @@ class Model:
             if len(data["xs"]) == 0:
                 return
             for i in range(len(self.models)):
-                pred = self.models[i].predict(data["xs"])
-                err = np.mean((np.array(data['true']) - np.array(pred)) ** 2)
-                self.errors[i] = err
+                try:
+                    pred = self.models[i].predict(data["xs"])
+                    err = np.mean((np.array(data['true']) - np.array(pred)) ** 2)
+                    self.errors[i] = err
+                except Exception as e:
+                    self.errors[i] = 0.0
                 
             if self.args.ensemble_type == "actor-critic":
                 reward = -np.min(data['true'])
@@ -186,6 +209,11 @@ class Model:
             model_i = np.random.choice(len(self.models), p=self.policy)
             self.last_action = model_i
             return self.models[model_i].decision_function(X)
+
+    def save(self):
+        for model in self.models:
+            if hasattr(model, "save"):
+                model.save()
 
 class LinearQuadraticRegression:
     def __init__(self):
@@ -291,6 +319,198 @@ class QuadraticRegression:
         X_exp = self._expand(X)
         return X_exp @ self.coef_
 
+class LocalNeuralModel:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = None
+        self.X = []
+        self.y = []
+        self.k = 40
+        self.train_X = []
+        self.train_y = []
+
+    def build_mlp(self, in_features, out_features=1, hidden=(64, 32), activation="relu", dropout=0.2, batchnorm=True):
+        inp = keras.Input(shape=(in_features,))
+        x = inp
+        for h in hidden:
+            x = layers.Dense(h, activation=None,
+                             kernel_initializer="he_normal",
+                             bias_initializer="zeros")(x)
+            if batchnorm:
+                x = layers.BatchNormalization()(x)
+            x = layers.Activation(activation)(x)
+            if dropout and dropout > 0:
+                x = layers.Dropout(dropout)(x)
+        out = layers.Dense(out_features, activation=None,
+                           kernel_initializer="he_normal",
+                           bias_initializer="zeros")(x)
+        model = keras.Model(inp, out)
+        return model
+
+    def save(self):
+        np.save(f"data/train_X_{self.X.shape[1]}_{self.k}.npy", np.asarray(self.train_X))
+        np.save(f"data/train_y_{self.X.shape[1]}_{self.k}.npy", self.train_y)
+        print(f"saving {np.asarray(self.train_X).shape} X")
+
+    def fit(self, X, y):
+        self.X = X.copy()
+        self.y = y.copy()
+        self.tree = BallTree(self.X, metric="euclidean")
+
+    def predict(self, X):
+        X = np.asarray(X)
+        # initialize model
+        if self.model is None:
+            in_features = (X.shape[1] + 1) * self.k
+            #self.model = build_transformer(
+            #    in_features=in_features, out_features=1,
+            #    k=self.k,            # <-- important, sequence length
+            #    d_model=128,
+            #    depth=4,
+            #    num_heads=4,
+            #    mlp_ratio=2.0,
+            #    dropout=0.1,
+            #)
+            self.model = self.build_mlp(in_features=in_features, out_features=1, hidden=(1024, 1024), 
+                activation="relu", dropout=0.2, batchnorm=True)
+            self.model.compile(
+                optimizer=optimizers.Adam(learning_rate=3e-4),
+                loss="mse",
+                metrics=["mse"]
+            )
+            if os.path.exists(f"data/train_X_{X.shape[1]}_{self.k}.npy"):
+                self.train_X = np.load(f"data/train_X_{X.shape[1]}_{self.k}.npy")
+                self.train_y = np.load(f"data/train_y_{X.shape[1]}_{self.k}.npy")
+                train_len = 2 * len(self.train_X) // 3
+                X_tr, y_tr = self.train_X[:train_len], self.train_y[:train_len]
+                X_va, y_va = self.train_X[train_len:], self.train_y[train_len:]
+                self.model.fit(X_tr, y_tr, validation_data=(X_va, y_va), batch_size=128, epochs=5, verbose=1)
+                print(f"loaded {self.train_X.shape} X")
+                self.train_X = list(self.train_X)
+                self.train_y = list(self.train_y)
+                
+        # preprocess data
+        preds = []
+        for x in X:
+            dist, idx = self.tree.query([x], k=self.k)
+            x_coords = self.X[idx][0] - x
+            x_std = np.std(x_coords, axis = 0)
+            x_std[np.where(x_std < 1e-6)] = 1e-6
+            x_coords /= x_std
+
+            y_values = self.y[idx]
+            y_mean = np.mean(y_values)
+            y_std = max(np.std(y_values), 1e-6)
+            y_values = (y_values - y_mean) / y_std
+            
+            inpt = np.asarray([np.column_stack((x_coords, y_values[0][..., None])).reshape(-1)])
+
+            inpt = torch.asarray(inpt.astype(np.float32, copy=False), device = self.device)
+            self.model.eval()
+            with torch.no_grad():
+                out = self.model(inpt)
+            out = out[0,0] * y_std + y_mean
+            preds.append(out)
+        preds = np.asarray(preds)
+        return preds
+
+    def update(self, data):
+        if "xs" in data.keys():
+            for x in data["xs"]:
+                dist, idx = self.tree.query([x], k=self.k)
+                x_coords = self.X[idx][0] - x
+                x_std = np.std(x_coords, axis = 0)
+                x_std[np.where(x_std < 1e-6)] = 1e-6
+                x_coords /= x_std
+
+                y_values = self.y[idx]
+                y_mean = np.mean(y_values)
+                y_std = max(np.std(y_values), 1e-6)
+                y_values = (y_values - y_mean) / y_std
+                
+                inpt = np.asarray([np.column_stack((x_coords, y_values[0][..., None])).reshape(-1)])
+
+                inpt = torch.asarray(inpt.astype(np.float32, copy=False), device = self.device)
+
+                self.train_X.append(np.asarray(inpt[0]))
+            for y in data["true"]:
+                self.train_y.append(np.asarray((y - y_mean) / y_std))
+
+class LearnablePositionalEncoding(layers.Layer):
+    def __init__(self, seq_len: int, d_model: int, **kwargs):
+        super().__init__(**kwargs)
+        self.seq_len = seq_len
+        self.d_model = d_model
+        # (seq_len, d_model) learned positional table
+        self.pos = self.add_weight(
+            name="pos_emb", shape=(seq_len, d_model),
+            initializer="zeros", trainable=True
+        )
+
+    def call(self, x):
+        # x: (batch, seq_len, d_model)
+        return x + self.pos
+
+def transformer_block(x, d_model=128, num_heads=4, mlp_ratio=2.0, dropout=0.1):
+    # PreNorm + MHA
+    y = layers.LayerNormalization(epsilon=1e-6)(x)
+    y = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model // num_heads, dropout=dropout)(y, y)
+    y = layers.Dropout(dropout)(y)
+    x = layers.Add()([x, y])
+
+    # PreNorm + FFN
+    y = layers.LayerNormalization(epsilon=1e-6)(x)
+    y = layers.Dense(int(d_model * mlp_ratio), activation="gelu")(y)
+    y = layers.Dropout(dropout)(y)
+    y = layers.Dense(d_model)(y)
+    y = layers.Dropout(dropout)(y)
+    x = layers.Add()([x, y])
+    return x
+
+def build_transformer(
+    in_features: int,         # = k * (d + 1)
+    out_features: int = 1,    # regression head by default
+    *,
+    k: int = 10,              # number of neighbors (sequence length)
+    d_model: int = 128,
+    depth: int = 2,
+    num_heads: int = 4,
+    mlp_ratio: float = 2.0,
+    dropout: float = 0.1,
+    pooling: str = "mean"     # "mean" or "cls"
+) -> keras.Model:
+    """
+    Expects a flat input of shape (k * (d+1),), reshapes to (k, d+1), then runs a Transformer encoder.
+    """
+    assert in_features % k == 0, f"in_features={in_features} must be divisible by k={k}"
+    feat_dim = in_features // k   # = d + 1
+
+    inp = keras.Input(shape=(in_features,), name="flat_seq")
+    x = layers.Reshape((k, feat_dim), name="reshape_to_tokens")(inp)     # (B, k, d+1)
+    x = layers.Dense(d_model, activation=None, name="token_proj")(x)     # (B, k, d_model)
+
+    # Learnable positional encoding
+    x = LearnablePositionalEncoding(seq_len=k, d_model=d_model, name="pos_encoding")(x)
+
+    # Stacked Transformer encoder blocks
+    for i in range(depth):
+        x = transformer_block(x, d_model=d_model, num_heads=num_heads,
+                              mlp_ratio=mlp_ratio, dropout=dropout)
+
+    # Pooling over the sequence
+    if pooling == "mean":
+        x = layers.GlobalAveragePooling1D(name="gap")(x)   # (B, d_model)
+    elif pooling == "cls":
+        # prepend a CLS token (optional variant)
+        raise NotImplementedError("CLS pooling not wired; use pooling='mean' or extend with a CLS token.")
+    else:
+        raise ValueError("pooling must be 'mean' or 'cls'")
+
+    # Regression/classification head
+    out = layers.Dense(out_features, activation=None, name="head")(x)
+    model = keras.Model(inp, out, name="local_transformer")
+    return model
+
 class LocalQuadraticModel:
     """
     Local Quadratic Model with Locally Weighted Regression (LWR).
@@ -352,10 +572,324 @@ class LocalQuadraticModel:
     def update(self, data):
         self.C = data['es'].sm.C
 
+import torch
+from tabpfn import TabPFNClassifier
+
+class PFNModel:
+    def __init__(self, max_bins=10):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = TabPFNClassifier(device=self.device)
+        self.max_bins = max_bins
+        self.bin_edges = None
+        self.is_fitted = False
+        self.X_train = None
+        self.y_train = None
+
+    def _bin_data(self, y):
+        # bins = min(max_bins, unique values)
+        bins = min(self.max_bins, max(2, int(len(y) / 2)))
+        # Ensure monotonic bins
+        self.bin_edges = np.linspace(np.min(y), np.max(y), bins + 1)
+        y_bins = np.digitize(y, self.bin_edges) - 1
+        return np.clip(y_bins, 0, bins - 1)
+
+    def fit(self, X, y):
+        if len(X) < 3:
+            self.is_fitted = False
+            return
+        y_bins = self._bin_data(y)
+        self.model.fit(X, y_bins)  # regular sklearn API
+        self.is_fitted = True
+
+    def predict(self, X, return_std=False):
+        if not self.is_fitted:
+            mean = np.zeros(len(X))
+            var = np.full(len(X), 1e3)
+            return (mean, var) if return_std else mean
+
+        preds = self.model.predict_proba(X)
+        bin_centers = 0.5 * (self.bin_edges[:-1] + self.bin_edges[1:])
+        
+        # Align class dims between preds and bins
+        Kp = preds.shape[1]
+        Kb = len(bin_centers)
+        K = min(Kp, Kb)
+
+        preds = preds[:, :K]
+        centers = bin_centers[:K]
+
+        mean = preds @ centers
+
+        diff = centers - mean[:, None]
+        var = np.sum(preds * diff**2, axis=1)
+
+        return (mean, var) if return_std else mean
+    
+if False:
+    rbf_kernel = ConstantKernel() * RBF()
+    mat_kernel = ConstantKernel() * Matern(nu=2.5)
+    rbf_model = GaussianProcessRegressor(
+        kernel=rbf_kernel,
+        alpha=1e-4,
+        normalize_y=True,
+        n_restarts_optimizer=8,
+    )
+    mat_model = GaussianProcessRegressor(
+        kernel=mat_kernel,
+        alpha=1e-4,
+        normalize_y=True,
+        n_restarts_optimizer=8,
+    )
+    pfn_model = PFNModel()
+    rbf_model = RBFModel()
+    svr_model = SVR(kernel="rbf", C=100, gamma="scale")
+    rf_model = RandomForestRegressor()
+
+class MyModel:
+    def __init__(self, problem_id, load_metadata, save_metadata):
+        self.problem_id = problem_id
+        self.load_metadata = load_metadata
+        self.save_metadata = save_metadata
+        rbf_kernel = ConstantKernel() * RBF()
+        mat_kernel = ConstantKernel() * Matern(nu=2.5)
+        rbf_model = GaussianProcessRegressor(
+            kernel=rbf_kernel,
+            alpha=1e-4,
+            normalize_y=True,
+            n_restarts_optimizer=8,
+        )
+        mat_model = GaussianProcessRegressor(
+            kernel=mat_kernel,
+            alpha=1e-4,
+            normalize_y=True,
+            n_restarts_optimizer=8,
+        )
+
+        self.models = [
+            LQModel("linear", change_model=False),
+            LQModel("quad", change_model=False),
+            RBFModel(),
+            SVR(kernel="rbf", C=100, gamma="scale"),
+            RandomForestRegressor(),
+            rbf_model,
+            mat_model,
+        ]
+
+        self.best_model_index = 0
+
+        # Meta-model: predikuje pravděpodobnost, že model i bude nejlepší
+        self.meta_model = LinearRegression()
+        #self.meta_model = Ridge(alpha=1e-3)
+        #self.meta_model = RandomForestRegressor()
+        self.meta_model = Pipeline([
+            ("scaler", StandardScaler()),
+        #    #("ridge", Ridge(alpha=1e-3))
+            ("linreg", LinearRegression())
+        ])
+
+        self.meta_X = []
+        self.meta_y = []
+        if self.load_metadata:
+            self.load()
+
+        self.last_ela = None
+        self.last_X = []
+        self.last_y = []
+        self.own_meta_X = []
+        self.own_meta_y = []
+
+    def ela(self, X, y):
+        n, d = X.shape
+        y = np.asarray(y)
+
+        features = []
+
+        # =====================
+        # A) Size-related
+        # =====================
+        features.append(n)
+        features.append(d)
+        features.append(n / max(d, 1))
+
+        # =====================
+        # B) y distribution
+        # =====================
+        var_y = np.var(y)
+        features.append(np.std(y))
+        features.append(iqr(y))
+
+        # =====================
+        # C) Model-wise quality
+        # =====================
+        rank_corrs = []
+        nmses = []
+
+        for model in self.models:
+            try:
+                y_pred = model.predict(X)
+
+                # rank correlation
+                rho, _ = spearmanr(y, y_pred)
+                rho = 0.0 if np.isnan(rho) else rho
+
+                # normalized MSE (scale invariant)
+                mse = np.mean((y - y_pred) ** 2)
+                nmse = mse / (var_y + 1e-12)
+
+            except Exception:
+                rho = 0.0
+                nmse = 1.0
+
+            rank_corrs.append(rho)
+            nmses.append(nmse)
+
+            features.append(rho)
+            features.append(nmse)
+
+        # =====================
+        # D) Relative comparison
+        # =====================
+        rank_corrs = np.asarray(rank_corrs)
+        best = np.max(rank_corrs)
+        second = np.partition(rank_corrs, -2)[-2] if len(rank_corrs) > 1 else 0.0
+
+        features.append(best)
+        features.append(second)
+        features.append(best - second)
+
+        # =====================
+        # E) Stability (best model)
+        # =====================
+        best_idx = int(np.argmax(rank_corrs))
+        try:
+            y_pred_best = self.models[best_idx].predict(X)
+            tau, _ = kendalltau(y, y_pred_best)
+            tau = 0.0 if np.isnan(tau) else tau
+        except Exception:
+            tau = 0.0
+
+        features.append(tau)
+
+        return np.asarray(features, dtype=float)
+    
+    def update(self, data):
+        if "xs" not in data.keys() or len(self.last_X) == 0:
+            return
+        
+        self.meta_X.append(self.last_ela)
+        self.own_meta_X.append(self.last_ela)        
+
+        X = np.asarray(data["xs"])
+        true = np.asarray(data["true"])
+
+        losses = []
+        for model in self.models:
+            model.fit(self.last_X, self.last_y)
+            y_pred = model.predict(X)
+            rho, _ = spearmanr(true, y_pred)
+            if np.isnan(rho):
+                rho = 0.0            
+            losses.append(1.0 - rho)
+
+        self.meta_y.append(losses)
+        self.own_meta_y.append(losses)
+
+        # uč se až když máš dost dat
+        if len(self.meta_X) >= 10:
+            self.meta_model.fit(
+                np.asarray(self.meta_X),
+                np.asarray(self.meta_y)
+            )
+        #print(f"update: {self.best_model_index}")
+
+    def fit(self, X, y, weights=None):
+        X_np = np.asarray(X)
+        y_np = np.asarray(y)
+        self.last_X = X_np
+        self.last_y = y_np
+        self.last_ela = self.ela(X_np, y_np)
+
+        if len(self.meta_X) >= 10:
+            predicted_losses = self.meta_model.predict(
+                self.last_ela.reshape(1, -1)
+            )[0]
+            print(predicted_losses)
+            self.best_model_index = int(np.argmin(predicted_losses))
+        else:
+            # cold start
+            self.best_model_index = 0
+
+        #print(f"fit: {self.best_model_index}")
+        self.models[self.best_model_index].fit(X_np, y_np)
+
+    def predict(self, X):
+        X_np = np.asarray(X)
+        #print(f"predict: {self.best_model_index}")
+        pred = self.models[self.best_model_index].predict(X_np)
+        #print(pred)
+        return pred
+    
+    def load(self):
+        self.meta_X = []
+        self.meta_y = []
+
+        if not os.path.isdir("data"):
+            return False
+
+        pattern = os.path.join("data", "meta-data-*.npz")
+        files = glob.glob(pattern)
+        func_id = self.problem_id.split("_")[1]
+
+        for fname in files:
+            # očekáváme tvar: meta-data-{problem_id}.npz
+            try:
+                pid = fname.split("meta-data-")[1].split(".npz")[0]
+                fid = pid.split("_")[1]
+            except Exception:
+                continue
+
+            # přeskoč aktuální problém (test leakage!)
+            if str(fid) == str(func_id):
+                continue
+
+            data = np.load(fname)
+
+            meta_X = data["meta_X"]
+            meta_y = data["meta_y"]
+
+            # append po řádcích
+            for x, y in zip(meta_X, meta_y):
+                self.meta_X.append(x)
+                self.meta_y.append(y)
+
+        #self.meta_X, self.meta_y = self.stratified_subsample(self.meta_X, self.meta_y, n_per_bin=500, n_bins=10)
+        #self.meta_X, self.meta_y = list(self.meta_X), list(self.meta_y)
+
+        if len(self.meta_X) >= 10:
+            self.meta_model.fit(
+                np.asarray(self.meta_X),
+                np.asarray(self.meta_y)
+            )
+
+        return len(self.meta_X) > 0
+    
+    def save(self):
+        if self.save_metadata:
+            os.makedirs("data", exist_ok=True)
+
+            filename = f"data/meta-data-{self.problem_id}.npz"
+
+            np.savez_compressed(
+                filename,
+                meta_X=np.asarray(self.own_meta_X),
+                meta_y=np.asarray(self.own_meta_y),
+            )
+
 class LQModel:
-    def __init__(self):
+    def __init__(self, model_type = "linear", change_model = True):
         self.coeffs = None
-        self.model_type = "linear"
+        self.model_type = model_type
+        self.change_model = change_model
 
     def _features(self, X):
         X = np.atleast_2d(X)
@@ -370,9 +904,10 @@ class LQModel:
 
     def fit(self, X, y, weights=None):
         self.dim = X.shape[1]
-        self.model_type = "linear" if len(X) < 2*self.dim \
-            else "quad" if len(X) < (self.dim**2) \
-            else "full"
+        if self.change_model:
+            self.model_type = "linear" if len(X) < 2*self.dim \
+                else "quad" if len(X) < (self.dim**2) \
+                else "full"
         Z = self._features(X)
         if weights is None:
             weights = np.ones(len(y))
