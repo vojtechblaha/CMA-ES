@@ -3,6 +3,7 @@ import os
 os.environ["KERAS_BACKEND"] = "torch"   # must be set before `import keras`
 
 import glob
+import time
 import numpy as np
 from numpy.linalg import cholesky, inv, norm, pinv, lstsq
 from scipy.spatial.distance import cdist
@@ -671,8 +672,8 @@ class MyModel:
             RBFModel(),
             SVR(kernel="rbf", C=100, gamma="scale"),
             RandomForestRegressor(),
-            rbf_model,
-            mat_model,
+            #rbf_model,
+            #mat_model,
         ]
 
         self.best_model_index = 0
@@ -784,8 +785,11 @@ class MyModel:
 
         losses = []
         for model in self.models:
+            start_time = time.time()
             model.fit(self.last_X, self.last_y)
+            print(f"{model}: {time.time() - start_time:.2f}s (fit)")
             y_pred = model.predict(X)
+            print(f"{model}: {time.time() - start_time:.2f}s (predict)")
             rho, _ = spearmanr(true, y_pred)
             if np.isnan(rho):
                 rho = 0.0            
