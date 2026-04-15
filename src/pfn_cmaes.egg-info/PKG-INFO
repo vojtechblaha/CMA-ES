@@ -1,3 +1,16 @@
+Metadata-Version: 2.4
+Name: pfn-cmaes
+Version: 0.1.0
+Summary: PFN-driven surrogate selection framework for surrogate-assisted CMA-ES
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: cma>=3.3.0
+Requires-Dist: coco-experiment>=2.8.2
+Requires-Dist: matplotlib>=3.8.4
+Requires-Dist: torch>=2.5.1
+Requires-Dist: scikit-learn>=1.4.2
+
 # PFN-driven surrogate selection for CMA-ES
 
 This repository contains a research-grade experimental skeleton for **surrogate-assisted CMA-ES** where a **decision model** (later e.g. PFN-based) selects one surrogate + evolution-control pair at each generation.
@@ -85,7 +98,7 @@ Depending on your environment the COCO package name may differ.
 ## Example
 
 ```bash
-python examples/run_coco_experiment.py \
+PYTHONPATH=src python examples/run_coco_experiment.py \
   --experiment_name demo \
   --function_id 1 \
   --dimension 5 \
@@ -97,25 +110,12 @@ python examples/run_coco_experiment.py \
   --generate_dataset
 ```
 
-### Generating dataset:
-```bash
-python examples/run_coco_experiment.py --experiment_name demo --generate_dataset --function_id 1
-```
+## Important research note
 
-### Training PFN decision model:
-```bash
-python examples/run_coco_experiment.py --experiment_name demo --train_decision_model --function_id 1
-```
-
-### Testing PFN decision strategy:
-```bash
-python examples/run_coco_experiment.py --experiment_name demo --function_id 1
-```
-
-## TODO
-- make coco logging during testing PFN strategy
-   - use standart lib to make html pages with comparable results with existing algoritms
-- check again overall correctness of algorithm
-- choose appropriate surrogate models and evolution strategies
-- run testing on dimension 5
-
+This code is intentionally designed as a **clean experimental framework**, not as a finalized benchmark submission. For GECCO-level work you will likely want to extend it with:
+- stronger dataset features (e.g. recent-window features, ranking diagnostics, uncertainty features),
+- ablations for dataset target design,
+- careful handling of clone determinism,
+- COCO observer integration and standardized postprocessing,
+- repeated seeds and statistical significance testing,
+- robust error handling for ill-conditioned surrogate failures.

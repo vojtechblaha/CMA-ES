@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pfn-cmaes"
+version = "0.1.0"
+description = "PFN-driven surrogate selection framework for surrogate-assisted CMA-ES"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "cma>=3.3.0",
+    "coco-experiment>=2.8.2",
+    "matplotlib>=3.8.4",
+    "torch>=2.5.1",
+    "scikit-learn>=1.4.2"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,5 +1,0 @@
-coco-experiment
-scikit-learn
-cma
-cocopp
-torch
