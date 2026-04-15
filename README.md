@@ -12,31 +12,15 @@ There are two modes:
    - the real optimizer still advances using only **purely true evaluations**,
    - dataset records are saved continuously for later PFN training.
 
-2. **Decision mode** (`generate_dataset=False`)
+2. **Training mode** (`train_decision_model=True`)
+   - training PFN decision model
+
+3. **Decision mode**
    - the decision model scores all available surrogate bundles,
    - the best bundle is selected,
    - its merged ranking is passed into CMA-ES,
    - generation-level logs are stored.
 
-## Proposed dataset target metric
-
-The dataset generation uses a stable, scale-aware target:
-
-```text
-score = clip(log(prev_best + eps) - log(next_best + eps), -clip, clip)
-```
-
-where `next_best` is obtained from a **one-step counterfactual clone** of the optimizer:
-- update cloned CMA-ES using the surrogate bundle,
-- ask the next generation from the clone,
-- evaluate that next generation **purely truly**,
-- use the best truly evaluated point as the bundle outcome.
-
-This metric is attractive because:
-- it is invariant to raw objective scaling,
-- it reflects multiplicative progress,
-- it aligns with optimization performance more directly than plain surrogate ranking loss,
-- it is less noisy than raw best-value differences.
 
 ## Package structure
 
