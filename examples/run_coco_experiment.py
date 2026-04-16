@@ -306,7 +306,7 @@ def build_trained_pfn_decision_model(
     surrogate_names: Sequence[str],
     device: str = "cpu",
 ) -> PFNDecisionModel:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
     trained_names = list(checkpoint.get("surrogate_names", []))
     if trained_names and list(surrogate_names) != trained_names:

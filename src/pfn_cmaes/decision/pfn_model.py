@@ -362,7 +362,7 @@ class PFNDecisionModel(DecisionModel):
         )
 
     def _load_backbone(self, checkpoint_path: str) -> PFNBackboneProtocol:
-        checkpoint = torch.load(Path(checkpoint_path), map_location=self.device)
+        checkpoint = torch.load(Path(checkpoint_path), map_location=self.device, weights_only=True)
 
         if "model" in checkpoint:
             model = checkpoint["model"]

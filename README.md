@@ -63,8 +63,15 @@ score(state, surrogate_names) -> SurrogateDecision
 ```bash
 python -m pip install -e .
 ```
-
 Depending on your environment the COCO package name may differ.
+
+## CUDA support
+
+```bash
+pip uninstall torch torchvision torchaudio -y
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
 
 ## Example
 
