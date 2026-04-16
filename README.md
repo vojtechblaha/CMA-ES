@@ -108,9 +108,9 @@ python examples/run_coco_experiment.py --experiment_name demo --function_id 1
 - COCO standartized results are available in files "results/{experiment_name}/cocopp/{experiment_name}_bbob_dim{dimension}_f{function_id}-{experiment_order}_{timestamp}/index1.html"
 
 ## TODO
-- make coco logging during testing PFN strategy
-   - use standart lib to make html pages with comparable results with existing algoritms
 - check again overall correctness of algorithm
 - choose appropriate surrogate models and evolution strategies
 - run testing on dimension 5
+- maybe (if neccesary) - adding out memory loading datasets during PFN training
+- maybe (after the first tests) - adding fine-tuning training of PFN during optimization run
 
