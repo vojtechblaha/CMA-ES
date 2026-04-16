@@ -85,16 +85,20 @@ python examples/run_coco_experiment.py \
 ```bash
 python examples/run_coco_experiment.py --experiment_name demo --generate_dataset --function_id 1
 ```
+- Generated datasets are in files "results/{experiment_name}/f{function_id}_i{instance_id}_d{dimension}_s{seed}/dataset.jsonl"
 
 ### Training PFN decision model:
 ```bash
 python examples/run_coco_experiment.py --experiment_name demo --train_decision_model --function_id 1
 ```
+- Trained models are in files "results/{experiment_name}/models/decision_model_dim{dimension}_heldout_f{function_id}.pt"
 
 ### Testing PFN decision strategy:
 ```bash
 python examples/run_coco_experiment.py --experiment_name demo --function_id 1
 ```
+- Testing logs are in files "results/{experiment_name}/f{function_id}_i{instance_id}_d{dimension}_s{seed}/generation_logs.jsonl"
+- COCO standartized results are available in files "results/{experiment_name}/cocopp/{experiment_name}_bbob_dim{dimension}_f{function_id}-{experiment_order}_{timestamp}/index1.html"
 
 ## TODO
 - make coco logging during testing PFN strategy
