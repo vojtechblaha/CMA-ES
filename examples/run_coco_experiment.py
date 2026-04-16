@@ -458,6 +458,65 @@ def maybe_train_decision_model(args: argparse.Namespace) -> None:
     )
 
 
+def maybe_run_coco_postprocessing(
+    *,
+    config: ExperimentConfig,
+    runner: CocoExperimentRunner,
+) -> None:
+    if config.dataset.generate_dataset:
+        return
+    if not config.logging.enable_coco_observer:
+        return
+    if not config.logging.enable_coco_postprocessing:
+        return
+
+    result_folder = runner.get_coco_result_folder_path()
+    if result_folder is None:
+        return
+
+    try:
+        import cocopp
+    except ImportError as exc:
+        raise ImportError(
+            "cocopp is required for COCO HTML postprocessing. "
+            "Install it with: python -m pip install cocopp"
+        ) from exc
+
+    output_dir = (
+        Path(config.logging.output_dir)
+        / config.run.experiment_name
+        / config.logging.coco_postprocess_output_dirname
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # cocopp.main supports command-line style invocation and generates HTML output
+    import webbrowser
+
+    original_open = webbrowser.open
+    original_open_new = getattr(webbrowser, "open_new", None)
+    original_open_new_tab = getattr(webbrowser, "open_new_tab", None)
+
+    try:
+        webbrowser.open = lambda *args, **kwargs: False
+        if original_open_new is not None:
+            webbrowser.open_new = lambda *args, **kwargs: False
+        if original_open_new_tab is not None:
+            webbrowser.open_new_tab = lambda *args, **kwargs: False
+
+        cocopp.main([
+            "-o", str(output_dir),
+            str(result_folder),
+        ])
+    finally:
+        webbrowser.open = original_open
+        if original_open_new is not None:
+            webbrowser.open_new = original_open_new
+        if original_open_new_tab is not None:
+            webbrowser.open_new_tab = original_open_new_tab
+
+    print(f"[cocopp] HTML report written to: {output_dir}")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -469,6 +528,11 @@ def main() -> None:
     runner = CocoExperimentRunner(config)
     summaries = runner.run_instances(
         range(args.instances_start, args.instances_end + 1)
+    )
+
+    maybe_run_coco_postprocessing(
+        config=config,
+        runner=runner,
     )
 
     for summary in summaries:

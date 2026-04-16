@@ -22,3 +22,7 @@ class CocoProblemWrapper:
         # COCO exposes best final target via final_target_hit, but for a generic optimizer
         # we only pass the objective value. The actual "solved" decision can stay external.
         return float(getattr(self.problem, "best_observed_fvalue1", np.inf))
+
+    def observe_with(self, observer: cocoex.Observer) -> "CocoProblemWrapper":
+        self.problem.observe_with(observer)
+        return self

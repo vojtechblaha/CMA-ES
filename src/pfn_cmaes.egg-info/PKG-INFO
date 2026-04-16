@@ -10,6 +10,7 @@ Requires-Dist: coco-experiment>=2.8.2
 Requires-Dist: matplotlib>=3.8.4
 Requires-Dist: torch>=2.5.1
 Requires-Dist: scikit-learn>=1.4.2
+Requires-Dist: cocopp>=2.8.4
 
 # PFN-driven surrogate selection for CMA-ES
 
@@ -25,31 +26,15 @@ There are two modes:
    - the real optimizer still advances using only **purely true evaluations**,
    - dataset records are saved continuously for later PFN training.
 
-2. **Decision mode** (`generate_dataset=False`)
+2. **Training mode** (`train_decision_model=True`)
+   - training PFN decision model
+
+3. **Decision mode**
    - the decision model scores all available surrogate bundles,
    - the best bundle is selected,
    - its merged ranking is passed into CMA-ES,
    - generation-level logs are stored.
 
-## Proposed dataset target metric
-
-The dataset generation uses a stable, scale-aware target:
-
-```text
-score = clip(log(prev_best + eps) - log(next_best + eps), -clip, clip)
-```
-
-where `next_best` is obtained from a **one-step counterfactual clone** of the optimizer:
-- update cloned CMA-ES using the surrogate bundle,
-- ask the next generation from the clone,
-- evaluate that next generation **purely truly**,
-- use the best truly evaluated point as the bundle outcome.
-
-This metric is attractive because:
-- it is invariant to raw objective scaling,
-- it reflects multiplicative progress,
-- it aligns with optimization performance more directly than plain surrogate ranking loss,
-- it is less noisy than raw best-value differences.
 
 ## Package structure
 
@@ -98,7 +83,7 @@ Depending on your environment the COCO package name may differ.
 ## Example
 
 ```bash
-PYTHONPATH=src python examples/run_coco_experiment.py \
+python examples/run_coco_experiment.py \
   --experiment_name demo \
   --function_id 1 \
   --dimension 5 \
@@ -110,12 +95,25 @@ PYTHONPATH=src python examples/run_coco_experiment.py \
   --generate_dataset
 ```
 
-## Important research note
+### Generating dataset:
+```bash
+python examples/run_coco_experiment.py --experiment_name demo --generate_dataset --function_id 1
+```
 
-This code is intentionally designed as a **clean experimental framework**, not as a finalized benchmark submission. For GECCO-level work you will likely want to extend it with:
-- stronger dataset features (e.g. recent-window features, ranking diagnostics, uncertainty features),
-- ablations for dataset target design,
-- careful handling of clone determinism,
-- COCO observer integration and standardized postprocessing,
-- repeated seeds and statistical significance testing,
-- robust error handling for ill-conditioned surrogate failures.
+### Training PFN decision model:
+```bash
+python examples/run_coco_experiment.py --experiment_name demo --train_decision_model --function_id 1
+```
+
+### Testing PFN decision strategy:
+```bash
+python examples/run_coco_experiment.py --experiment_name demo --function_id 1
+```
+
+## TODO
+- make coco logging during testing PFN strategy
+   - use standart lib to make html pages with comparable results with existing algoritms
+- check again overall correctness of algorithm
+- choose appropriate surrogate models and evolution strategies
+- run testing on dimension 5
+

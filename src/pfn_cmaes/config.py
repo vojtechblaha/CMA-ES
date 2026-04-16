@@ -34,6 +34,14 @@ class LoggingConfig:
     save_dataset_jsonl: bool = True
     save_numpy_snapshots: bool = False
 
+    # COCO logging / postprocessing
+    enable_coco_observer: bool = True
+    enable_coco_postprocessing: bool = True
+    coco_result_folder: str | None = None
+    coco_algorithm_name: str | None = None
+    coco_algorithm_info: str | None = None
+    coco_postprocess_output_dirname: str = "cocopp"
+
 
 @dataclass(slots=True)
 class RunConfig:
