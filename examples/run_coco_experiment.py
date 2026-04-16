@@ -86,6 +86,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
             surrogate_kwargs={
                 "ridge": 1e-6,
                 "lengthscale": 1.0,
+                "max_train_size": 200,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=EvaluateTopFraction,
             evolution_control_kwargs={
@@ -98,6 +101,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
             surrogate_kwargs={
                 "ridge": 1e-5,
                 "lengthscale": 1.0,
+                "max_train_size": 200,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=EvaluateTopFraction,
             evolution_control_kwargs={
@@ -112,6 +118,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
                 "alpha": 1e-6,
                 "normalize_y": True,
                 "return_std": True,
+                "max_train_size": 200,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=DoublyTrainedControl,
             evolution_control_kwargs={
@@ -130,6 +139,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
                 "alpha": 1e-6,
                 "normalize_y": True,
                 "return_std": True,
+                "max_train_size": 200,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=TopFractionPlusUncertaintyControl,
             evolution_control_kwargs={
@@ -145,6 +157,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
                 "min_samples_leaf": 2,
                 "random_state": 0,
                 "return_std": True,
+                "max_train_size": 400,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=AdaptiveModelLifelengthControl,
             evolution_control_kwargs={
@@ -163,6 +178,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
                 "C": 10.0,
                 "epsilon": 0.01,
                 "gamma": "scale",
+                "max_train_size": 400,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=EvaluateTopFraction,
             evolution_control_kwargs={
@@ -175,6 +193,9 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
             surrogate_kwargs={
                 "ridge": 1e-6,
                 "lengthscale": 1.0,
+                "max_train_size": 200,
+                "selection_mode": "hybrid",
+                "recent_fraction": 0.25,
             },
             evolution_control_cls=EvaluateAll,
             evolution_control_kwargs={},

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 from ..interfaces import SurrogateModel
 from ..types import SurrogatePopulation
@@ -48,10 +47,108 @@ def _fallback_predictions(query_x: np.ndarray) -> SurrogatePopulation:
     )
 
 
+def _select_nearest_indices(
+    train_x: np.ndarray,
+    query_x: np.ndarray,
+    k: int,
+) -> np.ndarray:
+    if k <= 0 or len(train_x) == 0:
+        return np.empty((0,), dtype=int)
+
+    if len(train_x) <= k:
+        return np.arange(len(train_x), dtype=int)
+
+    query_center = np.mean(query_x, axis=0)
+    d2 = np.sum((train_x - query_center[None, :]) ** 2, axis=1)
+
+    part = np.argpartition(d2, kth=k - 1)[:k]
+    part = part[np.argsort(d2[part], kind="stable")]
+    return np.asarray(part, dtype=int)
+
+
+def _select_training_subset(
+    train_x: np.ndarray,
+    train_y: np.ndarray,
+    query_x: np.ndarray,
+    max_train_size: int,
+    selection_mode: str,
+    recent_fraction: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    n = len(train_x)
+    max_n = int(max_train_size)
+
+    if max_n <= 0 or n <= max_n:
+        return train_x, train_y
+
+    mode = selection_mode.lower()
+
+    if mode == "recent":
+        idx = np.arange(n - max_n, n, dtype=int)
+        return train_x[idx], train_y[idx]
+
+    if mode == "nearest":
+        idx = _select_nearest_indices(
+            train_x=train_x,
+            query_x=query_x,
+            k=max_n,
+        )
+        return train_x[idx], train_y[idx]
+
+    if mode == "hybrid":
+        n_recent = int(round(max_n * float(recent_fraction)))
+        n_recent = max(0, min(n_recent, max_n))
+        n_nearest = max_n - n_recent
+
+        recent_idx = (
+            np.arange(n - n_recent, n, dtype=int)
+            if n_recent > 0
+            else np.empty((0,), dtype=int)
+        )
+
+        if n_nearest > 0:
+            remaining_mask = np.ones(n, dtype=bool)
+            if len(recent_idx) > 0:
+                remaining_mask[recent_idx] = False
+
+            remaining_indices = np.flatnonzero(remaining_mask)
+            remaining_x = train_x[remaining_indices]
+
+            nearest_local_idx = _select_nearest_indices(
+                train_x=remaining_x,
+                query_x=query_x,
+                k=min(n_nearest, len(remaining_x)),
+            )
+            nearest_idx = remaining_indices[nearest_local_idx]
+        else:
+            nearest_idx = np.empty((0,), dtype=int)
+
+        idx = np.concatenate([nearest_idx, recent_idx], axis=0)
+
+        if len(idx) == 0:
+            idx = np.arange(n - max_n, n, dtype=int)
+
+        idx = np.unique(idx)
+        idx.sort()
+
+        if len(idx) > max_n:
+            idx = idx[-max_n:]
+
+        return train_x[idx], train_y[idx]
+
+    raise ValueError(
+        f"Unsupported selection_mode={selection_mode!r}. "
+        f"Expected one of ['recent', 'nearest', 'hybrid']."
+    )
+
+
 @dataclass(slots=True)
 class LocalLinearSurrogate(SurrogateModel):
     ridge: float = 1e-6
     lengthscale: float = 1.0
+    min_train_size: int = 2
+    max_train_size: int = 200
+    selection_mode: str = "hybrid"
+    recent_fraction: float = 0.25
 
     def predict(
         self,
@@ -60,10 +157,39 @@ class LocalLinearSurrogate(SurrogateModel):
         query_x: np.ndarray,
     ) -> SurrogatePopulation:
         train_x = np.asarray(history_x, dtype=float)
-        train_y = np.asarray(history_y, dtype=float)
+        train_y = np.asarray(history_y, dtype=float).reshape(-1)
         query_x = np.asarray(query_x, dtype=float)
 
-        if len(train_x) == 0:
+        if query_x.ndim != 2:
+            raise ValueError(f"query_x must have shape [N, D], got {query_x.shape}")
+        if train_x.ndim != 2:
+            raise ValueError(f"history_x must have shape [N, D], got {train_x.shape}")
+        if len(train_x) != len(train_y):
+            raise ValueError("history_x and history_y must have the same number of samples.")
+
+        if len(train_x) < self.min_train_size:
+            return _fallback_predictions(query_x)
+
+        if train_x.shape[1] != query_x.shape[1]:
+            raise ValueError(
+                f"history_x and query_x must have the same feature dimension, "
+                f"got {train_x.shape[1]} and {query_x.shape[1]}"
+            )
+
+        train_x = np.nan_to_num(train_x, nan=0.0, posinf=1e6, neginf=-1e6)
+        train_y = np.nan_to_num(train_y, nan=0.0, posinf=1e6, neginf=-1e6)
+        query_x = np.nan_to_num(query_x, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        train_x, train_y = _select_training_subset(
+            train_x=train_x,
+            train_y=train_y,
+            query_x=query_x,
+            max_train_size=self.max_train_size,
+            selection_mode=self.selection_mode,
+            recent_fraction=self.recent_fraction,
+        )
+
+        if len(train_x) < self.min_train_size:
             return _fallback_predictions(query_x)
 
         train_xn, query_xn, _, _ = _normalize_xy(train_x, query_x)
@@ -72,13 +198,17 @@ class LocalLinearSurrogate(SurrogateModel):
         phi = np.column_stack([np.ones(len(train_xn)), train_xn])
 
         preds = []
+        eye = np.eye(phi.shape[1], dtype=float)
         for i, xq in enumerate(query_xn):
             w = weights[i]
             W = np.diag(w + 1e-12)
 
-            A = phi.T @ W @ phi + self.ridge * np.eye(phi.shape[1])
+            A = phi.T @ W @ phi + self.ridge * eye
             b = phi.T @ W @ train_y
-            beta = np.linalg.solve(A, b)
+            try:
+                beta = np.linalg.solve(A, b)
+            except np.linalg.LinAlgError:
+                beta = np.linalg.lstsq(A, b, rcond=None)[0]
 
             phi_q = np.concatenate([[1.0], xq])
             preds.append(float(phi_q @ beta))
@@ -93,6 +223,10 @@ class LocalLinearSurrogate(SurrogateModel):
 class LocalQuadraticSurrogate(SurrogateModel):
     ridge: float = 1e-5
     lengthscale: float = 1.0
+    min_train_size: int = 2
+    max_train_size: int = 200
+    selection_mode: str = "hybrid"
+    recent_fraction: float = 0.25
 
     @staticmethod
     def _quadratic_features(x: np.ndarray) -> np.ndarray:
@@ -116,10 +250,39 @@ class LocalQuadraticSurrogate(SurrogateModel):
         query_x: np.ndarray,
     ) -> SurrogatePopulation:
         train_x = np.asarray(history_x, dtype=float)
-        train_y = np.asarray(history_y, dtype=float)
+        train_y = np.asarray(history_y, dtype=float).reshape(-1)
         query_x = np.asarray(query_x, dtype=float)
 
-        if len(train_x) == 0:
+        if query_x.ndim != 2:
+            raise ValueError(f"query_x must have shape [N, D], got {query_x.shape}")
+        if train_x.ndim != 2:
+            raise ValueError(f"history_x must have shape [N, D], got {train_x.shape}")
+        if len(train_x) != len(train_y):
+            raise ValueError("history_x and history_y must have the same number of samples.")
+
+        if len(train_x) < self.min_train_size:
+            return _fallback_predictions(query_x)
+
+        if train_x.shape[1] != query_x.shape[1]:
+            raise ValueError(
+                f"history_x and query_x must have the same feature dimension, "
+                f"got {train_x.shape[1]} and {query_x.shape[1]}"
+            )
+
+        train_x = np.nan_to_num(train_x, nan=0.0, posinf=1e6, neginf=-1e6)
+        train_y = np.nan_to_num(train_y, nan=0.0, posinf=1e6, neginf=-1e6)
+        query_x = np.nan_to_num(query_x, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        train_x, train_y = _select_training_subset(
+            train_x=train_x,
+            train_y=train_y,
+            query_x=query_x,
+            max_train_size=self.max_train_size,
+            selection_mode=self.selection_mode,
+            recent_fraction=self.recent_fraction,
+        )
+
+        if len(train_x) < self.min_train_size:
             return _fallback_predictions(query_x)
 
         train_xn, query_xn, _, _ = _normalize_xy(train_x, query_x)
@@ -129,13 +292,17 @@ class LocalQuadraticSurrogate(SurrogateModel):
         Phi_q = self._quadratic_features(query_xn)
 
         preds = []
+        eye = np.eye(Phi.shape[1], dtype=float)
         for i in range(len(query_xn)):
             w = weights[i]
             W = np.diag(w + 1e-12)
 
-            A = Phi.T @ W @ Phi + self.ridge * np.eye(Phi.shape[1])
+            A = Phi.T @ W @ Phi + self.ridge * eye
             b = Phi.T @ W @ train_y
-            beta = np.linalg.solve(A, b)
+            try:
+                beta = np.linalg.solve(A, b)
+            except np.linalg.LinAlgError:
+                beta = np.linalg.lstsq(A, b, rcond=None)[0]
 
             preds.append(float(Phi_q[i] @ beta))
 
@@ -154,6 +321,9 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
     n_restarts_optimizer: int = 0
     random_state: int = 0
     min_train_size: int = 2
+    max_train_size: int = 200
+    selection_mode: str = "hybrid"
+    recent_fraction: float = 0.25
 
     def predict(
         self,
@@ -202,6 +372,18 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
         train_y = np.nan_to_num(train_y, nan=0.0, posinf=1e6, neginf=-1e6)
         query_x = np.nan_to_num(query_x, nan=0.0, posinf=1e6, neginf=-1e6)
 
+        train_x, train_y = _select_training_subset(
+            train_x=train_x,
+            train_y=train_y,
+            query_x=query_x,
+            max_train_size=self.max_train_size,
+            selection_mode=self.selection_mode,
+            recent_fraction=self.recent_fraction,
+        )
+
+        if len(train_x) < self.min_train_size:
+            return _fallback_predictions(query_x)
+
         try:
             x_scaler = StandardScaler()
             train_x_scaled = x_scaler.fit_transform(train_x)
@@ -247,7 +429,11 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
 
                 if y_scaler is not None:
                     mean = y_scaler.inverse_transform(mean_scaled.reshape(-1, 1)).ravel()
-                    y_scale = float(y_scaler.scale_[0]) if np.ndim(y_scaler.scale_) > 0 else float(y_scaler.scale_)
+                    y_scale = (
+                        float(y_scaler.scale_[0])
+                        if np.ndim(y_scaler.scale_) > 0
+                        else float(y_scaler.scale_)
+                    )
                     std = std_scaled * abs(y_scale)
                 else:
                     mean = mean_scaled
@@ -284,6 +470,10 @@ class RandomForestSurrogate(SurrogateModel):
     min_samples_leaf: int = 2
     random_state: int = 0
     return_std: bool = True
+    min_train_size: int = 2
+    max_train_size: int = 400
+    selection_mode: str = "hybrid"
+    recent_fraction: float = 0.25
 
     def predict(
         self,
@@ -294,35 +484,67 @@ class RandomForestSurrogate(SurrogateModel):
         from sklearn.ensemble import RandomForestRegressor
 
         train_x = np.asarray(history_x, dtype=float)
-        train_y = np.asarray(history_y, dtype=float)
+        train_y = np.asarray(history_y, dtype=float).reshape(-1)
         query_x = np.asarray(query_x, dtype=float)
 
-        if len(train_x) == 0:
+        if query_x.ndim != 2:
+            raise ValueError(f"query_x must have shape [N, D], got {query_x.shape}")
+        if train_x.ndim != 2:
+            raise ValueError(f"history_x must have shape [N, D], got {train_x.shape}")
+        if len(train_x) != len(train_y):
+            raise ValueError("history_x and history_y must have the same number of samples.")
+
+        if len(train_x) < self.min_train_size:
             return _fallback_predictions(query_x)
 
-        rf = RandomForestRegressor(
-            n_estimators=self.n_estimators,
-            min_samples_leaf=self.min_samples_leaf,
-            random_state=self.random_state,
-            n_jobs=-1,
+        if train_x.shape[1] != query_x.shape[1]:
+            raise ValueError(
+                f"history_x and query_x must have the same feature dimension, "
+                f"got {train_x.shape[1]} and {query_x.shape[1]}"
+            )
+
+        train_x = np.nan_to_num(train_x, nan=0.0, posinf=1e6, neginf=-1e6)
+        train_y = np.nan_to_num(train_y, nan=0.0, posinf=1e6, neginf=-1e6)
+        query_x = np.nan_to_num(query_x, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        train_x, train_y = _select_training_subset(
+            train_x=train_x,
+            train_y=train_y,
+            query_x=query_x,
+            max_train_size=self.max_train_size,
+            selection_mode=self.selection_mode,
+            recent_fraction=self.recent_fraction,
         )
-        rf.fit(train_x, train_y)
 
-        tree_preds = np.stack([tree.predict(query_x) for tree in rf.estimators_], axis=0)
-        mean = tree_preds.mean(axis=0)
+        if len(train_x) < self.min_train_size:
+            return _fallback_predictions(query_x)
 
-        if self.return_std:
-            std = tree_preds.std(axis=0)
+        try:
+            rf = RandomForestRegressor(
+                n_estimators=self.n_estimators,
+                min_samples_leaf=self.min_samples_leaf,
+                random_state=self.random_state,
+                n_jobs=-1,
+            )
+            rf.fit(train_x, train_y)
+
+            tree_preds = np.stack([tree.predict(query_x) for tree in rf.estimators_], axis=0)
+            mean = tree_preds.mean(axis=0)
+
+            if self.return_std:
+                std = tree_preds.std(axis=0)
+                return SurrogatePopulation(
+                    x=query_x,
+                    y_pred=np.asarray(mean, dtype=float),
+                    uncertainty=np.asarray(std, dtype=float),
+                )
+
             return SurrogatePopulation(
                 x=query_x,
                 y_pred=np.asarray(mean, dtype=float),
-                uncertainty=np.asarray(std, dtype=float),
             )
-
-        return SurrogatePopulation(
-            x=query_x,
-            y_pred=np.asarray(mean, dtype=float),
-        )
+        except Exception:
+            return _fallback_predictions(query_x)
 
 
 @dataclass(slots=True)
@@ -338,6 +560,10 @@ class RankSVMSurrogate(SurrogateModel):
     C: float = 10.0
     epsilon: float = 0.01
     gamma: str = "scale"
+    min_train_size: int = 2
+    max_train_size: int = 400
+    selection_mode: str = "hybrid"
+    recent_fraction: float = 0.25
 
     def predict(
         self,
@@ -350,25 +576,57 @@ class RankSVMSurrogate(SurrogateModel):
         from sklearn.svm import SVR
 
         train_x = np.asarray(history_x, dtype=float)
-        train_y = np.asarray(history_y, dtype=float)
+        train_y = np.asarray(history_y, dtype=float).reshape(-1)
         query_x = np.asarray(query_x, dtype=float)
 
-        if len(train_x) == 0:
+        if query_x.ndim != 2:
+            raise ValueError(f"query_x must have shape [N, D], got {query_x.shape}")
+        if train_x.ndim != 2:
+            raise ValueError(f"history_x must have shape [N, D], got {train_x.shape}")
+        if len(train_x) != len(train_y):
+            raise ValueError("history_x and history_y must have the same number of samples.")
+
+        if len(train_x) < self.min_train_size:
             return _fallback_predictions(query_x)
 
-        model = make_pipeline(
-            StandardScaler(),
-            SVR(
-                kernel="rbf",
-                C=self.C,
-                epsilon=self.epsilon,
-                gamma=self.gamma,
-            ),
-        )
-        model.fit(train_x, train_y)
-        pred = model.predict(query_x)
+        if train_x.shape[1] != query_x.shape[1]:
+            raise ValueError(
+                f"history_x and query_x must have the same feature dimension, "
+                f"got {train_x.shape[1]} and {query_x.shape[1]}"
+            )
 
-        return SurrogatePopulation(
-            x=query_x,
-            y_pred=np.asarray(pred, dtype=float),
+        train_x = np.nan_to_num(train_x, nan=0.0, posinf=1e6, neginf=-1e6)
+        train_y = np.nan_to_num(train_y, nan=0.0, posinf=1e6, neginf=-1e6)
+        query_x = np.nan_to_num(query_x, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        train_x, train_y = _select_training_subset(
+            train_x=train_x,
+            train_y=train_y,
+            query_x=query_x,
+            max_train_size=self.max_train_size,
+            selection_mode=self.selection_mode,
+            recent_fraction=self.recent_fraction,
         )
+
+        if len(train_x) < self.min_train_size:
+            return _fallback_predictions(query_x)
+
+        try:
+            model = make_pipeline(
+                StandardScaler(),
+                SVR(
+                    kernel="rbf",
+                    C=self.C,
+                    epsilon=self.epsilon,
+                    gamma=self.gamma,
+                ),
+            )
+            model.fit(train_x, train_y)
+            pred = model.predict(query_x)
+
+            return SurrogatePopulation(
+                x=query_x,
+                y_pred=np.asarray(pred, dtype=float),
+            )
+        except Exception:
+            return _fallback_predictions(query_x)

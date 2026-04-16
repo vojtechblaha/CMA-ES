@@ -86,14 +86,23 @@ class DatasetGenerationController:
         true_y = np.asarray([objective(x) for x in candidate_x], dtype=float)
         real_population = EvaluatedPopulation(x=candidate_x, y=true_y).sorted()
 
+        max_history_for_record = 512  # nebo z configu
+
+        if len(history_y) > max_history_for_record:
+            record_history_x = history_x[-max_history_for_record :].copy()
+            record_history_y = history_y[-max_history_for_record :].copy()
+        else:
+            record_history_x = history_x.copy()
+            record_history_y = history_y.copy()
+
         record = DatasetRecord(
             run_id=str(run_metadata["run_id"]),
             function_id=int(run_metadata["function_id"]),
             instance_id=int(run_metadata["instance_id"]),
             dimension=int(run_metadata["dimension"]),
             generation_index=generation_index,
-            history_x=history_x.copy(),
-            history_y=history_y.copy(),
+            history_x=record_history_x,
+            history_y=record_history_y,
             candidate_x=candidate_x.copy(),
             incumbent_x=incumbent_x,
             incumbent_y=float(incumbent_y),

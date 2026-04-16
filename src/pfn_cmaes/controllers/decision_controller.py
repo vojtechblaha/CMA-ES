@@ -62,26 +62,50 @@ class DecisionController:
         if not bundles:
             raise ValueError("bundles must not be empty.")
 
+        surrogate_names = [bundle.name for bundle in bundles]
+        if len(set(surrogate_names)) != len(surrogate_names):
+            raise ValueError(
+                f"Bundle names must be unique, got {surrogate_names!r}"
+            )
+
         candidate_x = np.asarray(candidate_x, dtype=np.float32)
         if candidate_x.ndim != 2:
             raise ValueError(
                 f"candidate_x must have shape [M, D], got {candidate_x.shape}."
             )
+        candidate_x = np.nan_to_num(
+            candidate_x,
+            nan=0.0,
+            posinf=1e6,
+            neginf=-1e6,
+        )
 
-        history_x = np.asarray(history.x, dtype=np.float32).copy()
-        history_y = np.asarray(history.y, dtype=np.float32).copy()
+        optimizer_state = dict(optimizer_state)
+
+        history_x = np.asarray(history.x, dtype=np.float32)
+        history_y = np.asarray(history.y, dtype=np.float32).reshape(-1)
 
         if history_x.ndim != 2:
             raise ValueError(
                 f"history.x must have shape [N, D], got {history_x.shape}."
             )
-        if history_y.ndim != 1:
-            history_y = history_y.reshape(-1)
-
         if len(history_x) != len(history_y):
             raise ValueError(
                 "history.x and history.y must have the same number of rows."
             )
+
+        history_x = np.nan_to_num(
+            history_x,
+            nan=0.0,
+            posinf=1e6,
+            neginf=-1e6,
+        )
+        history_y = np.nan_to_num(
+            history_y,
+            nan=0.0,
+            posinf=1e6,
+            neginf=-1e6,
+        )
 
         if history_x.shape[0] > 0 and history_x.shape[1] != candidate_x.shape[1]:
             raise ValueError(
@@ -89,49 +113,79 @@ class DecisionController:
                 f"Got {history_x.shape[1]} vs {candidate_x.shape[1]}."
             )
 
-        incumbent_x = np.asarray(history.incumbent_x, dtype=np.float32).copy()
-        if incumbent_x.ndim != 1:
-            incumbent_x = incumbent_x.reshape(-1)
+        inferred_dim = (
+            int(history_x.shape[1])
+            if history_x.shape[0] > 0
+            else int(candidate_x.shape[1])
+        )
 
+        incumbent_x = np.asarray(history.incumbent_x, dtype=np.float32).reshape(-1)
         if incumbent_x.size == 0:
-            dim = int(
-                optimizer_state.get(
-                    "dimension",
-                    candidate_x.shape[1] if candidate_x.ndim == 2 else 0,
-                )
+            incumbent_x = np.zeros(inferred_dim, dtype=np.float32)
+        elif len(incumbent_x) != inferred_dim:
+            raise ValueError(
+                f"incumbent_x must have length {inferred_dim}, got {len(incumbent_x)}."
             )
-            incumbent_x = np.zeros(dim, dtype=np.float32)
+
+        incumbent_x = np.nan_to_num(
+            incumbent_x,
+            nan=0.0,
+            posinf=1e6,
+            neginf=-1e6,
+        )
 
         incumbent_y = float(history.incumbent_y)
         if not np.isfinite(incumbent_y):
-            incumbent_y = 0.0
+            if len(history_y) > 0:
+                incumbent_y = float(np.min(history_y))
+            else:
+                incumbent_y = 0.0
 
         state = GenerationState(
             generation_index=int(generation_index),
-            evaluated_history_x=history_x,
-            evaluated_history_y=history_y,
-            candidate_x=candidate_x,
-            incumbent_x=incumbent_x,
-            incumbent_y=incumbent_y,
-            optimizer_state=dict(optimizer_state),
+            evaluated_history_x=history_x.copy(),
+            evaluated_history_y=history_y.copy(),
+            candidate_x=candidate_x.copy(),
+            incumbent_x=incumbent_x.copy(),
+            incumbent_y=float(incumbent_y),
+            optimizer_state=optimizer_state,
             metadata={},
         )
 
         decision = self.decision_model.score(
             state=state,
-            surrogate_names=[bundle.name for bundle in bundles],
+            surrogate_names=surrogate_names,
         )
 
-        chosen = next(
-            (bundle for bundle in bundles if bundle.name == decision.chosen_surrogate_name),
-            None,
-        )
-        if chosen is None:
+        if decision.chosen_surrogate_name not in surrogate_names:
             raise ValueError(
                 "Decision model returned an unknown surrogate bundle name: "
                 f"{decision.chosen_surrogate_name!r}. "
-                f"Known bundles: {[bundle.name for bundle in bundles]!r}"
+                f"Known bundles: {surrogate_names!r}"
             )
+
+        chosen = next(
+            bundle
+            for bundle in bundles
+            if bundle.name == decision.chosen_surrogate_name
+        )
+
+        # Enrich decision metadata with runtime diagnostics without changing the
+        # decision-model input representation.
+        metadata = dict(decision.metadata) if decision.metadata is not None else {}
+        metadata.update(
+            {
+                "surrogate_names": surrogate_names,
+                "history_size": int(len(history_y)),
+                "candidate_count": int(len(candidate_x)),
+                "generation_index": int(generation_index),
+            }
+        )
+        decision = SurrogateDecision(
+            goodness=dict(decision.goodness),
+            chosen_surrogate_name=decision.chosen_surrogate_name,
+            metadata=metadata,
+        )
 
         return chosen, decision
 
