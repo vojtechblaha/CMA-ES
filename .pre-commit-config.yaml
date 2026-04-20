@@ -1,0 +1,16 @@
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.9.7
+  hooks:
+  - id: ruff
+    name: Lint Python
+    args: [--fix]
+  - id: ruff-format
+    name: Format Python
+- repo: https://github.com/jumanjihouse/pre-commit-hook-yamlfmt
+  rev: 0.2.3
+  hooks:
+  - id: yamlfmt
+    name: Format YAML
+    args: [--mapping, "2", --sequence, "2", --offset, "0", --preserve-quotes, --implicit_start, --implicit_end,
+      --preserve_null, --width, "100"]
