@@ -18,6 +18,9 @@ dependencies = [
     "cocopp>=2.8.4"
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
