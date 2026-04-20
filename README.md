@@ -2,6 +2,43 @@
 
 This repository contains a research-grade experimental skeleton for **surrogate-assisted CMA-ES** where a **decision model** (later e.g. PFN-based) selects one surrogate + evolution-control pair at each generation.
 
+## Prerequisites
+
+### Python
+
+You need to have python installed on your system.
+It is recommended to use [uv](https://docs.astral.sh/uv/guides/install-python/) or [pyenv](https://github.com/pyenv/pyenv).
+
+### UV
+
+Although the structure allows using whatever build-tool you want, it's better to use [uv](https://github.com/astral-sh/uv).
+
+### Setting up environments
+
+```shell
+make install
+```
+
+### pre-commit
+
+Consider installing [pre-commit](https://pre-commit.com/) to run checks automatically.
+
+Install pre-commit tool:
+```shell
+uv tool install pre-commit
+```
+
+Install git hooks:
+```shell
+uv tool run pre-commit install
+```
+
+Trigger check manually on all files:
+```shell
+uv tool run pre-commit run --all-files
+```
+
+
 ## Main ideas
 
 There are two modes:
@@ -58,18 +95,11 @@ The PFN decision model later implements:
 score(state, surrogate_names) -> SurrogateDecision
 ```
 
-## Installation
-
-```bash
-python -m pip install -e .
-```
-Depending on your environment the COCO package name may differ.
-
 ## CUDA support
 
 ```bash
-pip uninstall torch torchvision torchaudio -y
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+uv pip uninstall torch torchvision torchaudio
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
 
