@@ -362,9 +362,7 @@ class SetConditionedPFNBackbone(nn.Module):
         if mask is None:
             return None
         if mask.shape != (batch_size, seq_len):
-            raise ValueError(
-                f"{name} must have shape {(batch_size, seq_len)}, got {tuple(mask.shape)}"
-            )
+            raise ValueError(f"{name} must have shape {(batch_size, seq_len)}, got {tuple(mask.shape)}")
         return mask <= 0.0
 
     def forward(
@@ -396,9 +394,7 @@ class SetConditionedPFNBackbone(nn.Module):
         if candidate_dim != self.candidate_dim:
             raise ValueError(f"candidate_x last dimension must be {self.candidate_dim}, got {candidate_dim}")
         if context_y.shape != (batch_size, context_len, 1):
-            raise ValueError(
-                f"context_y must have shape {(batch_size, context_len, 1)}, got {tuple(context_y.shape)}"
-            )
+            raise ValueError(f"context_y must have shape {(batch_size, context_len, 1)}, got {tuple(context_y.shape)}")
         if num_actions == 0:
             raise ValueError("action_ids must contain at least one action token.")
         if torch.any(action_ids < 0) or torch.any(action_ids >= self.config.max_action_tokens):
@@ -414,9 +410,7 @@ class SetConditionedPFNBackbone(nn.Module):
             candidate_tokens = candidate_tokens + self.candidate_type_embedding
             action_tokens = action_tokens + self.action_type_embedding
 
-        context_key_padding_mask = self._make_key_padding_mask(
-            context_mask, batch_size, context_len, "context_mask"
-        )
+        context_key_padding_mask = self._make_key_padding_mask(context_mask, batch_size, context_len, "context_mask")
         candidate_key_padding_mask = self._make_key_padding_mask(
             candidate_mask, batch_size, candidate_len, "candidate_mask"
         )
@@ -459,7 +453,5 @@ class SetConditionedPFNBackbone(nn.Module):
         logits = self.head(action_tokens).squeeze(-1)
 
         if logits.shape != (batch_size, num_actions):
-            raise RuntimeError(
-                f"Expected output shape {(batch_size, num_actions)}, got {tuple(logits.shape)}"
-            )
+            raise RuntimeError(f"Expected output shape {(batch_size, num_actions)}, got {tuple(logits.shape)}")
         return logits

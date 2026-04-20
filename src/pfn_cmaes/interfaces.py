@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Dict, Protocol
-
-import numpy as np
+from typing import Callable, Dict
 
 from .types import (
     Array,
-    EvaluatedPopulation,
     EvolutionControlResult,
     GenerationState,
     SurrogateDecision,
     SurrogatePopulation,
 )
-
 
 ObjectiveFunction = Callable[[Array], float]
 

@@ -64,15 +64,11 @@ class DecisionController:
 
         surrogate_names = [bundle.name for bundle in bundles]
         if len(set(surrogate_names)) != len(surrogate_names):
-            raise ValueError(
-                f"Bundle names must be unique, got {surrogate_names!r}"
-            )
+            raise ValueError(f"Bundle names must be unique, got {surrogate_names!r}")
 
         candidate_x = np.asarray(candidate_x, dtype=np.float32)
         if candidate_x.ndim != 2:
-            raise ValueError(
-                f"candidate_x must have shape [M, D], got {candidate_x.shape}."
-            )
+            raise ValueError(f"candidate_x must have shape [M, D], got {candidate_x.shape}.")
         candidate_x = np.nan_to_num(
             candidate_x,
             nan=0.0,
@@ -86,13 +82,9 @@ class DecisionController:
         history_y = np.asarray(history.y, dtype=np.float32).reshape(-1)
 
         if history_x.ndim != 2:
-            raise ValueError(
-                f"history.x must have shape [N, D], got {history_x.shape}."
-            )
+            raise ValueError(f"history.x must have shape [N, D], got {history_x.shape}.")
         if len(history_x) != len(history_y):
-            raise ValueError(
-                "history.x and history.y must have the same number of rows."
-            )
+            raise ValueError("history.x and history.y must have the same number of rows.")
 
         history_x = np.nan_to_num(
             history_x,
@@ -113,19 +105,13 @@ class DecisionController:
                 f"Got {history_x.shape[1]} vs {candidate_x.shape[1]}."
             )
 
-        inferred_dim = (
-            int(history_x.shape[1])
-            if history_x.shape[0] > 0
-            else int(candidate_x.shape[1])
-        )
+        inferred_dim = int(history_x.shape[1]) if history_x.shape[0] > 0 else int(candidate_x.shape[1])
 
         incumbent_x = np.asarray(history.incumbent_x, dtype=np.float32).reshape(-1)
         if incumbent_x.size == 0:
             incumbent_x = np.zeros(inferred_dim, dtype=np.float32)
         elif len(incumbent_x) != inferred_dim:
-            raise ValueError(
-                f"incumbent_x must have length {inferred_dim}, got {len(incumbent_x)}."
-            )
+            raise ValueError(f"incumbent_x must have length {inferred_dim}, got {len(incumbent_x)}.")
 
         incumbent_x = np.nan_to_num(
             incumbent_x,
@@ -164,11 +150,7 @@ class DecisionController:
                 f"Known bundles: {surrogate_names!r}"
             )
 
-        chosen = next(
-            bundle
-            for bundle in bundles
-            if bundle.name == decision.chosen_surrogate_name
-        )
+        chosen = next(bundle for bundle in bundles if bundle.name == decision.chosen_surrogate_name)
 
         # Enrich decision metadata with runtime diagnostics without changing the
         # decision-model input representation.

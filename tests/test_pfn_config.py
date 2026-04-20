@@ -1,6 +1,8 @@
-from pfn_cmaes.stubs.decision_models import RegularPFNBackbone, PFNBackboneConfig
-import torch
 import tempfile
+
+import torch
+
+from pfn_cmaes.stubs.decision_models import PFNBackboneConfig, RegularPFNBackbone
 
 cfg = PFNBackboneConfig(
     hidden_dim=96,

@@ -39,8 +39,7 @@ class PFNBackboneProtocol(Protocol):
         action_ids: "torch.Tensor",
         context_mask: "torch.Tensor | None" = None,
         candidate_mask: "torch.Tensor | None" = None,
-    ) -> "torch.Tensor":
-        ...
+    ) -> "torch.Tensor": ...
 
 
 class PFNStateFeaturizer:
@@ -121,9 +120,7 @@ class PFNStateFeaturizer:
 
         hist_x = np.asarray(state.evaluated_history_x, dtype=np.float32)
         if hist_x.ndim == 2 and hist_x.shape[0] > 0 and cand_x.shape[1] != hist_x.shape[1]:
-            raise ValueError(
-                "candidate_x and evaluated_history_x must have same feature dimension."
-            )
+            raise ValueError("candidate_x and evaluated_history_x must have same feature dimension.")
         return self._sanitize_array(cand_x)
 
     def _extract_optimizer_features(self, state: GenerationState) -> np.ndarray:
@@ -321,17 +318,12 @@ class PFNDecisionModel(DecisionModel):
         scores = scores_t.detach().cpu().numpy().reshape(-1)
 
         if len(scores) != len(surrogate_names):
-            raise ValueError(
-                f"Backbone returned {len(scores)} scores, expected {len(surrogate_names)}."
-            )
+            raise ValueError(f"Backbone returned {len(scores)} scores, expected {len(surrogate_names)}.")
         if not np.isfinite(scores).all():
             raise ValueError(f"PFN backbone returned non-finite scores: {scores}")
 
         scaled_scores = scores / max(float(self.config.temperature), 1e-8)
-        goodness = {
-            name: float(score)
-            for name, score in zip(surrogate_names, scaled_scores, strict=True)
-        }
+        goodness = {name: float(score) for name, score in zip(surrogate_names, scaled_scores, strict=True)}
 
         score_arr = np.asarray(scaled_scores, dtype=np.float32)
         best_idx = int(np.argmax(score_arr))
@@ -344,10 +336,7 @@ class PFNDecisionModel(DecisionModel):
         top1_top2_margin = ordered[0][1] - ordered[1][1] if len(ordered) > 1 else 0.0
 
         probs = 1.0 / (1.0 + np.exp(-scores))
-        binary_accept = {
-            name: int(prob >= 0.5)
-            for name, prob in zip(surrogate_names, probs, strict=True)
-        }
+        binary_accept = {name: int(prob >= 0.5) for name, prob in zip(surrogate_names, probs, strict=True)}
 
         return SurrogateDecision(
             goodness=goodness,
@@ -408,8 +397,7 @@ class PFNDecisionModel(DecisionModel):
             return model
 
         raise ValueError(
-            "Checkpoint must contain either `model` or "
-            "`model_state_dict` + `context_dim` + `candidate_dim`."
+            "Checkpoint must contain either `model` or `model_state_dict` + `context_dim` + `candidate_dim`."
         )
 
     def _to_tensor(self, array: np.ndarray) -> "torch.Tensor":

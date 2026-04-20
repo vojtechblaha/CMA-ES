@@ -33,22 +33,14 @@ class CocoExperimentRunner:
             logging_cfg.coco_result_folder
             or f"{run_cfg.experiment_name}_bbob_dim{run_cfg.dimension}_f{run_cfg.function_id}"
         )
-        algorithm_name = (
-            logging_cfg.coco_algorithm_name
-            or f"pfn_cmaes/{run_cfg.experiment_name}"
-        )
-        algorithm_info = (
-            logging_cfg.coco_algorithm_info
-            or (
-                "PFN-driven surrogate-assisted CMA-ES; "
-                f"function={run_cfg.function_id}, dim={run_cfg.dimension}, seed={run_cfg.seed}"
-            )
+        algorithm_name = logging_cfg.coco_algorithm_name or f"pfn_cmaes/{run_cfg.experiment_name}"
+        algorithm_info = logging_cfg.coco_algorithm_info or (
+            "PFN-driven surrogate-assisted CMA-ES; "
+            f"function={run_cfg.function_id}, dim={run_cfg.dimension}, seed={run_cfg.seed}"
         )
 
         observer_options = (
-            f"result_folder: {result_folder} "
-            f"algorithm_name: {algorithm_name} "
-            f"algorithm_info: {algorithm_info}"
+            f"result_folder: {result_folder} algorithm_name: {algorithm_name} algorithm_info: {algorithm_info}"
         )
 
         return cocoex.Observer("bbob", observer_options)
@@ -90,9 +82,9 @@ class CocoExperimentRunner:
         if not logging_cfg.enable_coco_observer:
             return None
 
+        run = self.base_config.run
         result_folder = (
-            logging_cfg.coco_result_folder
-            or f"{self.base_config.run.experiment_name}_bbob_dim{self.base_config.run.dimension}_f{self.base_config.run.function_id}"
+            logging_cfg.coco_result_folder or f"{run.experiment_name}_bbob_dim{run.dimension}_f{run.function_id}"
         )
 
         # cocoex writes results under exdata/

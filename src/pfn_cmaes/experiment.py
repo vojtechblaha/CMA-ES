@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Callable
 
 import numpy as np
@@ -12,7 +11,7 @@ from .controllers.surrogate_bundle import SurrogateBundle
 from .history import EvaluationHistory
 from .metrics import CounterfactualImprovementMetric
 from .storage.run_logger import RunLogger
-from .types import EvaluatedPopulation, GenerationLog, RunSummary
+from .types import GenerationLog, RunSummary
 
 
 class PFNSurrogateExperiment:
@@ -29,9 +28,7 @@ class PFNSurrogateExperiment:
 
     def run(self, objective: Callable[[np.ndarray], float]) -> RunSummary:
         run_cfg = self.config.run
-        run_id = (
-            f"f{run_cfg.function_id}_i{run_cfg.instance_id}_d{run_cfg.dimension}_s{run_cfg.seed}"
-        )
+        run_id = f"f{run_cfg.function_id}_i{run_cfg.instance_id}_d{run_cfg.dimension}_s{run_cfg.seed}"
         logger = RunLogger(self.config.logging, run_cfg.experiment_name, run_id)
         optimizer = self.config.optimizer_backend_cls(**self.config.optimizer_kwargs)
         history = EvaluationHistory()

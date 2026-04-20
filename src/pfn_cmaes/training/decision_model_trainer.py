@@ -137,9 +137,7 @@ class DecisionTrainingDataset(Dataset):
         self.surrogate_names = list(surrogate_names)
         self.featurizer = PFNStateFeaturizer(pfn_config)
         self.training_config = training_config
-        self.samples: list[
-            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-        ] = []
+        self.samples: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
 
         for record in self.records:
             state = GenerationState(
@@ -165,9 +163,7 @@ class DecisionTrainingDataset(Dataset):
                 min_positive=self.training_config.min_positive_labels,
             )
 
-            self.samples.append(
-                (context_x, context_y, candidate_x, action_ids, target_labels)
-            )
+            self.samples.append((context_x, context_y, candidate_x, action_ids, target_labels))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -267,10 +263,7 @@ def load_training_records(
                     )
                     return records
 
-    print(
-        f"[train_decision_model] loaded {len(records)} valid records "
-        f"(skipped_invalid={skipped_invalid})"
-    )
+    print(f"[train_decision_model] loaded {len(records)} valid records (skipped_invalid={skipped_invalid})")
     return records
 
 
@@ -331,11 +324,7 @@ def _print_target_statistics(
             min_positive=training_config.min_positive_labels,
         )
 
-        best_idx = int(
-            np.argmax(
-                np.asarray([float(scores[name]) for name in surrogate_names], dtype=np.float32)
-            )
-        )
+        best_idx = int(np.argmax(np.asarray([float(scores[name]) for name in surrogate_names], dtype=np.float32)))
         oracle_counts[surrogate_names[best_idx]] += 1
 
         for name, label in zip(surrogate_names, labels, strict=True):
@@ -472,10 +461,7 @@ def train_decision_model(
             num_batches += 1
 
         mean_loss = epoch_loss / max(num_batches, 1)
-        print(
-            f"[train_decision_model] epoch={epoch + 1}/{training_config.epochs} "
-            f"loss={mean_loss:.6f}"
-        )
+        print(f"[train_decision_model] epoch={epoch + 1}/{training_config.epochs} loss={mean_loss:.6f}")
 
     checkpoint_path = build_checkpoint_path(
         experiment_root=experiment_root,
@@ -525,8 +511,5 @@ def train_decision_model(
         checkpoint_path,
     )
 
-    print(
-        f"[train_decision_model] saved checkpoint to {checkpoint_path} "
-        f"using {len(records)} records"
-    )
+    print(f"[train_decision_model] saved checkpoint to {checkpoint_path} using {len(records)} records")
     return checkpoint_path

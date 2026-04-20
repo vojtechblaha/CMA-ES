@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -42,13 +42,10 @@ class SurrogatePopulation:
 
     def __post_init__(self) -> None:
         if len(self.x) != len(self.y_pred):
-            raise ValueError(
-                f"x and y_pred must have the same length, got {len(self.x)} and {len(self.y_pred)}"
-            )
+            raise ValueError(f"x and y_pred must have the same length, got {len(self.x)} and {len(self.y_pred)}")
         if self.uncertainty is not None and len(self.uncertainty) != len(self.y_pred):
             raise ValueError(
-                f"uncertainty and y_pred must have the same length, got "
-                f"{len(self.uncertainty)} and {len(self.y_pred)}"
+                f"uncertainty and y_pred must have the same length, got {len(self.uncertainty)} and {len(self.y_pred)}"
             )
 
     def sorted(self) -> "SurrogatePopulation":

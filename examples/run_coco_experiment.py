@@ -47,9 +47,7 @@ from pfn_cmaes.types import GenerationState
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="PFN-driven surrogate-assisted CMA-ES on COCO."
-    )
+    parser = argparse.ArgumentParser(description="PFN-driven surrogate-assisted CMA-ES on COCO.")
     parser.add_argument("--experiment_name", type=str, required=True)
     parser.add_argument("--function_id", type=int, default=1)
     parser.add_argument("--dimension", type=int, default=5)
@@ -292,12 +290,7 @@ def build_checkpoint_path(
     dimension: int,
     function_id: int,
 ) -> Path:
-    return (
-        output_dir
-        / experiment_name
-        / "models"
-        / f"decision_model_dim{dimension}_heldout_f{function_id}.pt"
-    )
+    return output_dir / experiment_name / "models" / f"decision_model_dim{dimension}_heldout_f{function_id}.pt"
 
 
 def build_trained_pfn_decision_model(
@@ -323,13 +316,13 @@ def build_trained_pfn_decision_model(
         candidate_dim=int(checkpoint["candidate_dim"]),
         config=PFNBackboneConfig(**cfg),
     )
-    
+
     if len(surrogate_names) > backbone.config.max_action_tokens:
         raise ValueError(
             f"Checkpoint supports at most {backbone.config.max_action_tokens} action tokens, "
             f"but runtime has {len(surrogate_names)} surrogate bundles."
         )
-    
+
     backbone.load_state_dict(checkpoint["model_state_dict"])
     backbone.eval()
 
@@ -342,9 +335,7 @@ def build_trained_pfn_decision_model(
         normalize_targets=bool(pfn_config_dict.get("normalize_targets", True)),
         include_ranks=bool(pfn_config_dict.get("include_ranks", True)),
         include_recency=bool(pfn_config_dict.get("include_recency", True)),
-        include_optimizer_features_in_context=bool(
-            pfn_config_dict.get("include_optimizer_features_in_context", True)
-        ),
+        include_optimizer_features_in_context=bool(pfn_config_dict.get("include_optimizer_features_in_context", True)),
         temperature=float(pfn_config_dict.get("temperature", 1.0)),
         tie_margin=float(pfn_config_dict.get("tie_margin", 1e-3)),
     )
@@ -478,14 +469,11 @@ def maybe_run_coco_postprocessing(
         import cocopp
     except ImportError as exc:
         raise ImportError(
-            "cocopp is required for COCO HTML postprocessing. "
-            "Install it with: python -m pip install cocopp"
+            "cocopp is required for COCO HTML postprocessing. Install it with: python -m pip install cocopp"
         ) from exc
 
     output_dir = (
-        Path(config.logging.output_dir)
-        / config.run.experiment_name
-        / config.logging.coco_postprocess_output_dirname
+        Path(config.logging.output_dir) / config.run.experiment_name / config.logging.coco_postprocess_output_dirname
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -503,10 +491,13 @@ def maybe_run_coco_postprocessing(
         if original_open_new_tab is not None:
             webbrowser.open_new_tab = lambda *args, **kwargs: False
 
-        cocopp.main([
-            "-o", str(output_dir),
-            str(result_folder),
-        ])
+        cocopp.main(
+            [
+                "-o",
+                str(output_dir),
+                str(result_folder),
+            ]
+        )
     finally:
         webbrowser.open = original_open
         if original_open_new is not None:
@@ -526,9 +517,7 @@ def main() -> None:
 
     config = build_experiment_config(args)
     runner = CocoExperimentRunner(config)
-    summaries = runner.run_instances(
-        range(args.instances_start, args.instances_end + 1)
-    )
+    summaries = runner.run_instances(range(args.instances_start, args.instances_end + 1))
 
     maybe_run_coco_postprocessing(
         config=config,

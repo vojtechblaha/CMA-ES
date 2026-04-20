@@ -7,7 +7,7 @@ import numpy as np
 
 from ..history import EvaluationHistory
 from ..interfaces import ObjectiveFunction, OptimizerBackend
-from ..types import DatasetRecord, EvolutionControlResult, EvaluatedPopulation
+from ..types import DatasetRecord, EvaluatedPopulation, EvolutionControlResult
 from .surrogate_bundle import SurrogateBundle
 
 
@@ -62,7 +62,7 @@ class DatasetGenerationController:
             lookahead_x = optimizer_clone.ask()
             lookahead_y = np.asarray([objective(x) for x in lookahead_x], dtype=float)
             lookahead_population = EvaluatedPopulation(x=lookahead_x, y=lookahead_y).sorted()
-            
+
             lookahead_best_y = float(lookahead_population.best_y)
 
             # Number of expensive objective evaluations consumed by the bundle
@@ -73,7 +73,6 @@ class DatasetGenerationController:
 
             improvement = max(incumbent_y - lookahead_best_y, 0.0)
             score = improvement / float(num_true_evals)
-
 
             artifacts[bundle.name] = BundleGenerationArtifacts(
                 result=ec_result,
@@ -89,8 +88,8 @@ class DatasetGenerationController:
         max_history_for_record = 512  # nebo z configu
 
         if len(history_y) > max_history_for_record:
-            record_history_x = history_x[-max_history_for_record :].copy()
-            record_history_y = history_y[-max_history_for_record :].copy()
+            record_history_x = history_x[-max_history_for_record:].copy()
+            record_history_y = history_y[-max_history_for_record:].copy()
         else:
             record_history_x = history_x.copy()
             record_history_y = history_y.copy()

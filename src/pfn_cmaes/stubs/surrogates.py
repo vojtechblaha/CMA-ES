@@ -99,11 +99,7 @@ def _select_training_subset(
         n_recent = max(0, min(n_recent, max_n))
         n_nearest = max_n - n_recent
 
-        recent_idx = (
-            np.arange(n - n_recent, n, dtype=int)
-            if n_recent > 0
-            else np.empty((0,), dtype=int)
-        )
+        recent_idx = np.arange(n - n_recent, n, dtype=int) if n_recent > 0 else np.empty((0,), dtype=int)
 
         if n_nearest > 0:
             remaining_mask = np.ones(n, dtype=bool)
@@ -135,10 +131,7 @@ def _select_training_subset(
 
         return train_x[idx], train_y[idx]
 
-    raise ValueError(
-        f"Unsupported selection_mode={selection_mode!r}. "
-        f"Expected one of ['recent', 'nearest', 'hybrid']."
-    )
+    raise ValueError(f"Unsupported selection_mode={selection_mode!r}. Expected one of ['recent', 'nearest', 'hybrid'].")
 
 
 @dataclass(slots=True)
@@ -331,11 +324,12 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
         history_y: np.ndarray,
         query_x: np.ndarray,
     ) -> SurrogatePopulation:
+        import warnings
+
         from sklearn.exceptions import ConvergenceWarning
         from sklearn.gaussian_process import GaussianProcessRegressor
         from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
         from sklearn.preprocessing import StandardScaler
-        import warnings
 
         train_x = np.asarray(history_x, dtype=float)
         train_y = np.asarray(history_y, dtype=float).reshape(-1)
@@ -348,9 +342,7 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
             raise ValueError(f"history_x must have shape [N, D], got {train_x.shape}")
 
         if len(train_x) != len(train_y):
-            raise ValueError(
-                "history_x and history_y must have the same number of samples."
-            )
+            raise ValueError("history_x and history_y must have the same number of samples.")
 
         if len(query_x) == 0:
             return SurrogatePopulation(
@@ -396,17 +388,13 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
                 y_scaler = None
                 train_y_scaled = train_y
 
-            kernel = (
-                ConstantKernel(1.0, (1e-2, 1e4))
-                * Matern(
-                    length_scale=np.ones(train_x.shape[1], dtype=float),
-                    length_scale_bounds=(1e-2, 1e3),
-                    nu=self.nu,
-                )
-                + WhiteKernel(
-                    noise_level=max(self.alpha, 1e-8),
-                    noise_level_bounds=(1e-8, 1e1),
-                )
+            kernel = ConstantKernel(1.0, (1e-2, 1e4)) * Matern(
+                length_scale=np.ones(train_x.shape[1], dtype=float),
+                length_scale_bounds=(1e-2, 1e3),
+                nu=self.nu,
+            ) + WhiteKernel(
+                noise_level=max(self.alpha, 1e-8),
+                noise_level_bounds=(1e-8, 1e1),
             )
 
             gp = GaussianProcessRegressor(
@@ -429,11 +417,7 @@ class GaussianProcessMaternSurrogate(SurrogateModel):
 
                 if y_scaler is not None:
                     mean = y_scaler.inverse_transform(mean_scaled.reshape(-1, 1)).ravel()
-                    y_scale = (
-                        float(y_scaler.scale_[0])
-                        if np.ndim(y_scaler.scale_) > 0
-                        else float(y_scaler.scale_)
-                    )
+                    y_scale = float(y_scaler.scale_[0]) if np.ndim(y_scaler.scale_) > 0 else float(y_scaler.scale_)
                     std = std_scaled * abs(y_scale)
                 else:
                     mean = mean_scaled
