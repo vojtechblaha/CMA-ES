@@ -129,6 +129,8 @@ python examples/run_coco_experiment.py --experiment_name demo --generate_dataset
 python examples/run_coco_experiment.py --experiment_name demo --train_decision_model --function_id 1
 ```
 - Trained models are in files "results/{experiment_name}/models/decision_model_dim{dimension}_heldout_f{function_id}.pt"
+- Training streams dataset records from JSONL files instead of loading the full dataset into RAM.
+- For large datasets, use `--train_steps_per_epoch` to cap epoch length and `--train_shuffle_buffer` to control bounded streaming shuffle memory.
 
 ### Testing PFN decision strategy:
 ```bash
