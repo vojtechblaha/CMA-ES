@@ -137,6 +137,20 @@ python examples/run_coco_experiment.py --experiment_name demo --function_id 1
 - Testing logs are in files "results/{experiment_name}/f{function_id}_i{instance_id}_d{dimension}_s{seed}/generation_logs.jsonl"
 - COCO standartized results are available in files "results/{experiment_name}/cocopp/{experiment_name}_bbob_dim{dimension}_f{function_id}-{experiment_order}_{timestamp}/index1.html"
 
+### Generating evaluation graphs:
+```bash
+python coco_eval_graph.py exdata 5 1 24 --ref-years 2020 2021 --cache-dir coco_cache 
+```
+- Generate evalution graphs for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache.
+- Warning: Everytime it uses for evaluation the last runs from exdata.
+
+### Generating evaluation tables:
+```bash
+python coco_eval_table.py exdata 5 1 24 --ref-years 2020 2021 --cache-dir coco_cache --evals 50 100 200 500 1000
+```
+- Generate evalution tables for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache, it computes metrics for budgets 50, ..., 1000.
+- Warning: Everytime it uses for evaluation the last runs from exdata.
+
 ## TODO
 - check again overall correctness of algorithm
 - choose appropriate surrogate models and evolution strategies
