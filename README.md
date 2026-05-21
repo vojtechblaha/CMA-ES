@@ -153,6 +153,10 @@ python coco_eval_graph.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 ```
 - Generate evalution graphs for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache.
 - Warning: Everytime it uses for evaluation the last runs from exdata.
+- Comparing with all algorithms:
+```bash
+python coco_eval_graph.py exdata 5 23 24 pfn_sur --ref-tags 2009 2010 2012 2013 2014-others 2015-CEC 2015-GECCO 2016 2017 2017-others 2018 2018-others 2019 2020 2021 2022 2023 --cache-dir coco_cache
+```
 
 ### Generating evaluation tables:
 ```bash

@@ -40,6 +40,7 @@ from typing import Iterable
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FormatStrFormatter, NullFormatter
 import numpy as np
+from matplotlib.ticker import MultipleLocator
 
 VERSION = "2026-05-17-coco-ecdf-cache-short-flat-names-windows-fix"
 DEFAULT_TARGETS = np.logspace(2, -8, 51)  # COCO-like 51 targets: 1e2 ... 1e-8
@@ -79,6 +80,16 @@ def parse_args() -> argparse.Namespace:
                    help="BBOB archive publication year for reference curves. Can be repeated. Deprecated alias for --ref-years.")
     p.add_argument("--ref-years", type=int, nargs="+", default=None,
                    help="One or more BBOB archive publication years for reference curves; default: 2020. Example: --ref-years 2009 2020")
+    p.add_argument(
+        "--ref-tags",
+        type=str,
+        nargs="+",
+        default=["2020"],
+        help=(
+            "Reference archive tags/substrings. "
+            "Examples: 2020 GECCO2018 CMA-ES"
+        ),
+    )
     p.add_argument("--cache-dir", type=Path, default=None,
                    help="Directory for downloaded/extracted COCO reference archives. Default: system temp/coco_bbob_archive_cache")
     p.add_argument("--refs", nargs="*", default=None,
@@ -265,6 +276,27 @@ def as_list(x) -> list:
     except TypeError:
         return [x]
 
+def archive_entries_for_tags(archive, tags: list[str]) -> list[str]:
+    candidates: list[str] = []
+
+    for tag in tags:
+        try:
+            vals = [str(v) for v in as_list(archive.find(tag))]
+            print(f"[INFO] archive.find({tag!r}) -> {len(vals)} entries")
+            candidates.extend(vals)
+        except Exception as e:
+            print(f"[WARN] archive.find({tag!r}) failed: {e}")
+
+    # deduplicate
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for e in candidates:
+        if e not in seen:
+            out.append(e)
+            seen.add(e)
+
+    return out
 
 
 def resolve_ref_years(args: argparse.Namespace) -> list[int]:
@@ -365,6 +397,56 @@ def archive_entries_for_year(archive, year: int) -> list[str]:
             seen.add(e)
     return uniq
 
+def normalize_bbob_archive_item(item: str) -> str:
+    item = str(item)
+    print(item)
+    # cocopp index sometimes points to broken 2018-others paths
+    mappings = [
+        ["2014-others/","2014/"],
+        ["2015-CEC/","2015/"],
+        ["2015-GECCO/","2015/"],
+        ["2017-others/","2017/"],
+        ["2018-others/","2018/"],
+    ]
+
+    for mapping in mappings:
+        if mapping[0] in item:
+            candidate = item.replace(mapping[0], mapping[1], 1)
+            #print(f"[INFO] remapping archive item: {item} -> {candidate}")
+            return candidate
+
+    return item
+
+def try_direct_bbob_download(item: str, cache_root: Path) -> Path | None:
+    import urllib.request
+
+    item = item.replace("\\", "/")
+    urls = []
+    alg_name = item.split("/")[-1].split(".")[0]
+
+    if item.startswith("2014/") or alg_name in {"GNN-CMA-ES_Faury", "IPOP-CMA-ES-2019_Faury"}:
+        urls.append(f"https://raw.githubusercontent.com/numbbo/data-archive/gh-pages/data-archive/bbob/incomplete/{item}")
+
+    else:
+        urls.append(f"https://numbbo.github.io/data-archive/data-archive/bbob/{item}")
+
+
+    for url in urls:
+        out = cache_root / "archives" / (safe_cache_name(url, max_prefix=60) + ".tgz")
+
+        if out.exists() and out.stat().st_size > 0:
+            return out
+
+        try:
+            print(f"[INFO] direct download: {url}")
+            urllib.request.urlretrieve(url, out)
+            if out.exists() and out.stat().st_size > 0:
+                return out
+        except Exception as e:
+            print(f"[WARN] direct download failed: {url}: {e}")
+
+    return None
+
 
 def download_archive_entry(archive, item: str | Path, cache_root: Path) -> Path | None:
     """Return a cached local archive/path for a COCO archive entry.
@@ -391,7 +473,18 @@ def download_archive_entry(archive, item: str | Path, cache_root: Path) -> Path 
                 return m
 
     try:
+        #local = archive.get(str(item)
+        norm_item = normalize_bbob_archive_item(item)
+        direct = try_direct_bbob_download(str(norm_item), cache_root)
+        if direct is not None:
+            return direct
+        print(f"archive get for {item}...")
         local = archive.get(str(item))
+        #local = f"https://numbbo.github.io/data-archive/data-archive/bbob/{str(item)}"
+        #local = f"https://raw.githubusercontent.com/numbbo/data-archive/gh-pages/data-archive/bbob/{str(item)}"
+        print(f"archive.get({item!r}) -> {local}")
+        #local = normalize_bbob_archive_item(local)
+        #print(f"normalized archive item: {local}")
         lp = Path(str(local))
         if lp.exists():
             if lp.is_file():
@@ -533,10 +626,15 @@ def get_reference_roots(args: argparse.Namespace) -> dict[str, Path]:
                 pass
             raw.extend(matches or [r])
     else:
-        years = resolve_ref_years(args)
-        print(f"[INFO] reference years: {years}")
-        for y in years:
-            raw.extend(archive_entries_for_year(archive, y))
+        tags = args.ref_tags
+
+        print(f"[INFO] reference tags: {tags}")
+
+        raw.extend(archive_entries_for_tags(archive, tags))
+        #years = resolve_ref_years(args)
+        #print(f"[INFO] reference years: {years}")
+        #for y in years:
+        #    raw.extend(archive_entries_for_year(archive, y))
 
     seen: set[str] = set()
     entries: list[str | Path] = []
@@ -699,7 +797,7 @@ def plot_one(
             continue
         plt.step(
             x, y, where="post",
-            color="0.72", alpha=0.45, linewidth=0.9,
+            color="0.72", alpha=0.45, linewidth=0.4,
             label=label if label_refs else (f"COCO/BBOB {ref_plotted + 1}+ reference algorithms" if ref_plotted == 0 else None),
             zorder=1,
         )
@@ -711,7 +809,7 @@ def plot_one(
         x, y = np.array([]), np.array([])
 
     if x.size and local_hits is not None:
-        plt.step(x, y, where="post", color="black", linewidth=3.0,
+        plt.step(x, y, where="post", color="black", linewidth=0.4,
                 label=f"{local_label} (runs={local_hits.n_runs})", zorder=5)
     else:
         print(f"[WARN] f{func}: no local data to plot")
@@ -735,6 +833,8 @@ def plot_one(
         ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
     else:
         ax.grid(True, which="both", alpha=0.3)
+    ax.yaxis.set_major_locator(MultipleLocator(0.2))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.05))
     plt.legend(loc="best")
 
     out_dir.mkdir(parents=True, exist_ok=True)
