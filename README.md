@@ -44,7 +44,7 @@ uv tool run pre-commit run --all-files
 
 Download TabPFN:
 ```shell
-$env:TABPFN_API_KEY="tvuj_api_key"
+$env:TABPFN_TOKEN="tvuj_api_key"
 ```
 Api key here: https://ux.priorlabs.ai/account/licenses
 
@@ -166,4 +166,3 @@ python coco_eval_table.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 - run testing on dimension 5
 - maybe (if neccesary) - adding out memory loading datasets during PFN training
 - maybe (after the first tests) - adding fine-tuning training of PFN during optimization run
-
