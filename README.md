@@ -45,6 +45,7 @@ uv tool run pre-commit run --all-files
 Download TabPFN:
 ```shell
 $env:TABPFN_TOKEN="tvuj_api_key"
+python -c "from tabpfn import TabPFNRegressor; TabPFNRegressor().fit([[0.0],[1.0]], [0.0, 1.0])"
 ```
 Api key here: https://ux.priorlabs.ai/account/licenses
 
