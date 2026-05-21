@@ -46,6 +46,7 @@ Download TabPFN:
 ```shell
 $env:TABPFN_API_KEY="tvuj_api_key"
 ```
+Api key here: https://ux.priorlabs.ai/account/licenses
 
 ## Main ideas
 
