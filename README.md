@@ -44,7 +44,7 @@ uv tool run pre-commit run --all-files
 
 Download TabPFN:
 ```shell
-python -c "from tabpfn import TabPFNRegressor; TabPFNRegressor().fit([[0.0],[1.0]], [0.0, 1.0])"
+$env:TABPFN_API_KEY="tvuj_api_key"
 ```
 
 ## Main ideas
