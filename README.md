@@ -42,6 +42,10 @@ Trigger check manually on all files:
 uv tool run pre-commit run --all-files
 ```
 
+Download TabPFN:
+```shell
+python -c "import torch; print(torch.cuda.is_available())"
+```
 
 ## Main ideas
 
