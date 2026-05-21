@@ -18,6 +18,10 @@ Although the structure allows using whatever build-tool you want, it's better to
 ```shell
 make install
 ```
+or
+```shell
+pip install -e .
+```
 
 ### pre-commit
 
