@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("dim", type=int)
     p.add_argument("first_func", type=int)
     p.add_argument("last_func", type=int)
+    p.add_argument("exp_name", type=str, help="Last BBOB function id, inclusive")
 
     p.add_argument("--evals", type=int, nargs="+", required=True,
                    help="Raw evaluation budgets, e.g. --evals 50 100 200 500 1000")
@@ -231,8 +232,8 @@ def get_reference_roots(args: argparse.Namespace) -> dict[str, Path]:
     return roots
 
 
-def newest_local_function_dir(exdata: Path, dim: int, func: int) -> Path | None:
-    pat = re.compile(rf"^demo_bbob_dim{dim}_f{func}(?:-(\d+))?$")
+def newest_local_function_dir(exdata: Path, dim: int, func: int, exp_name) -> Path | None:
+    pat = re.compile(rf"^{exp_name}_bbob_dim{dim}_f{func}(?:-(\d+))?$")
     candidates: list[tuple[int, Path]] = []
     if not exdata.exists():
         return None
@@ -348,7 +349,7 @@ def main() -> int:
     for func in range(args.first_func, args.last_func + 1):
         rows: list[dict] = []
 
-        local_folder = newest_local_function_dir(args.exdata, args.dim, func)
+        local_folder = newest_local_function_dir(args.exdata, args.dim, func, args.exp_name)
         local_hits = None
         if local_folder is not None:
             local_hits = cocopp_hit_data(local_folder, args.dim, func, targets, debug=args.debug_refs)

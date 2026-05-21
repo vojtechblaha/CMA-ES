@@ -139,14 +139,14 @@ python examples/run_coco_experiment.py --experiment_name demo --function_id 1
 
 ### Generating evaluation graphs:
 ```bash
-python coco_eval_graph.py exdata 5 1 24 --ref-years 2020 2021 --cache-dir coco_cache 
+python coco_eval_graph.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir coco_cache 
 ```
 - Generate evalution graphs for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache.
 - Warning: Everytime it uses for evaluation the last runs from exdata.
 
 ### Generating evaluation tables:
 ```bash
-python coco_eval_table.py exdata 5 1 24 --ref-years 2020 2021 --cache-dir coco_cache --evals 50 100 200 500 1000
+python coco_eval_table.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir coco_cache --evals 50 100 200 500 1000
 ```
 - Generate evalution tables for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache, it computes metrics for budgets 50, ..., 1000.
 - Warning: Everytime it uses for evaluation the last runs from exdata.

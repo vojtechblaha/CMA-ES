@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("dim", type=int, help="BBOB dimension, e.g. 5")
     p.add_argument("first_func", type=int, help="First BBOB function id, inclusive")
     p.add_argument("last_func", type=int, help="Last BBOB function id, inclusive")
+    p.add_argument("exp_name", type=str, help="Last BBOB function id, inclusive")
 
     p.add_argument("--budget", type=int, default=1000,
                    help="Maximum raw number of function evaluations; default 1000")
@@ -141,8 +142,8 @@ def cocopp_hit_data(root: Path, dim: int, func: int, targets: np.ndarray, budget
         n_runs=n_runs,
     )
 
-def newest_local_function_dir(exdata: Path, dim: int, func: int) -> Path | None:
-    pat = re.compile(rf"^demo_bbob_dim{dim}_f{func}(?:-(\d+))?$")
+def newest_local_function_dir(exdata: Path, dim: int, func: int, exp_name) -> Path | None:
+    pat = re.compile(rf"^{exp_name}_bbob_dim{dim}_f{func}(?:-(\d+))?$")
     candidates: list[tuple[int, Path]] = []
     if not exdata.exists():
         return None
@@ -237,10 +238,10 @@ def find_dat_files(root: Path, dim: int, func: int) -> list[Path]:
     return sorted(found)
 
 
-def load_local_runs(exdata: Path, dim: int, func: int, debug: bool = False) -> list[RunCurve]:
-    folder = newest_local_function_dir(exdata, dim, func)
+def load_local_runs(exdata: Path, dim: int, func: int, exp_name, debug: bool = False) -> list[RunCurve]:
+    folder = newest_local_function_dir(exdata, dim, func, exp_name=exp_name)
     if folder is None:
-        print(f"[WARN] f{func}: no local folder demo_bbob_dim{dim}_f{func}[-NNNN] found")
+        print(f"[WARN] f{func}: no local folder {exp_name}_bbob_dim{dim}_f{func}[-NNNN] found")
         return []
     dat_files = find_dat_files(folder, dim, func)
     if debug:
@@ -762,14 +763,14 @@ def main() -> int:
         print("[WARN] no reference roots loaded; plots will contain only local exdata")
 
     for func in range(args.first_func, args.last_func + 1):
-        local_folder = newest_local_function_dir(args.exdata, args.dim, func)
+        local_folder = newest_local_function_dir(args.exdata, args.dim, func, args.exp_name)
         local_hits = None
         if local_folder is not None:
             local_hits = cocopp_hit_data(local_folder, args.dim, func, targets, args.budget, debug=args.debug_refs)
 
         if local_hits is None:
             print(f"[WARN] f{func}: cocopp failed for local data, falling back to manual parser")
-            local_runs = load_local_runs(args.exdata, args.dim, func, debug=args.debug_refs)
+            local_runs = load_local_runs(args.exdata, args.dim, func, exp_name=args.exp_name, debug=args.debug_refs)
             hits, n_pairs = hitting_times(local_runs, targets, args.budget)
             local_hits = HitData(hits=hits, n_pairs=n_pairs, n_runs=len(local_runs)) if n_pairs else None
 
