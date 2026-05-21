@@ -44,7 +44,7 @@ uv tool run pre-commit run --all-files
 
 Download TabPFN:
 ```shell
-python -c "import torch; print(torch.cuda.is_available())"
+python -c "from tabpfn import TabPFNRegressor; TabPFNRegressor().fit([[0.0],[1.0]], [0.0, 1.0])"
 ```
 
 ## Main ideas
