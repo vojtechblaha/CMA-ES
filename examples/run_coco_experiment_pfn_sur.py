@@ -79,10 +79,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_max_records", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
 
+    parser.add_argument("--max_train_size", type=int, default=200)
+    parser.add_argument("--recent_fraction", type=float, default=0.35)
+    parser.add_argument("--top_fraction", type=float, default=0.4)
+    parser.add_argument("--uncertainty_fraction", type=float, default=0.2)
+
     return parser.parse_args()
 
 
-def build_surrogate_specs() -> list[SurrogateSpec]:
+def build_surrogate_specs(args) -> list[SurrogateSpec]:
     """
     Build the experimental set of surrogate + evolution-control bundles.
     """
@@ -93,18 +98,18 @@ def build_surrogate_specs() -> list[SurrogateSpec]:
             evolution_control_cls=TopFractionPlusUncertaintyControl,#EvaluateTopFraction,
             surrogate_kwargs={
                 "min_train_size": 5,
-                "max_train_size": 1000,
+                "max_train_size": args.max_train_size,
                 "selection_mode": "hybrid",
-                "recent_fraction": 0.35,
+                "recent_fraction": args.recent_fraction,
                 "device": "cuda",
                 "n_estimators": 8,
-                "return_uncertainty": True,
+                "return_uncertainty": False,#True,
                 "raise_on_error": True,
             },
             evolution_control_kwargs={
                 #"fraction": 0.5,
-                "top_fraction": 0.4,
-                "uncertainty_fraction": 0.2,
+                "top_fraction": args.top_fraction,
+                "uncertainty_fraction": args.uncertainty_fraction,
             },
         )
     ]
@@ -284,7 +289,7 @@ def build_or_load_decision_model(
 
 
 def build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
-    surrogate_specs = build_surrogate_specs()
+    surrogate_specs = build_surrogate_specs(args)
     surrogate_names = [spec.name for spec in surrogate_specs]
 
     decision_model = UniformDecisionModel()
