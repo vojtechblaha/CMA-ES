@@ -171,3 +171,23 @@ python coco_eval_table.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 - run testing on dimension 5
 - maybe (if neccesary) - adding out memory loading datasets during PFN training
 - maybe (after the first tests) - adding fine-tuning training of PFN during optimization run
+
+
+module load python/3.11
+pip install -e . --no-build-isolation
+pip install -e .
+
+mkdir -p /storage/brno2/home/blahavo/hf_cache
+mkdir -p /storage/brno2/home/blahavo/tmp
+mkdir -p /storage/brno2/home/blahavo/torch_cache
+
+export HF_HOME=/storage/brno2/home/blahavo/hf_cache
+export HUGGINGFACE_HUB_CACHE=/storage/brno2/home/blahavo/hf_cache/hub
+export HF_HUB_CACHE=/storage/brno2/home/blahavo/hf_cache/hub
+export XDG_CACHE_HOME=/storage/brno2/home/blahavo/.cache
+export TORCH_HOME=/storage/brno2/home/blahavo/torch_cache
+export TMPDIR=/storage/brno2/home/blahavo/tmp
+
+python -c "from tabpfn import TabPFNRegressor; TabPFNRegressor().fit([[0.0],[1.0]],[0.0,1.0])"
+
+qsub -l select=1:ncpus=1:ngpus=1:mem=8gb:scratch_local=32gb -I

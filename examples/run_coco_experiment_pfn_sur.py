@@ -103,7 +103,7 @@ def build_surrogate_specs(args) -> list[SurrogateSpec]:
                 "recent_fraction": args.recent_fraction,
                 "device": "cuda",
                 "n_estimators": 8,
-                "return_uncertainty": True,
+                "return_uncertainty": False,#True,
                 "raise_on_error": True,
             },
             evolution_control_kwargs={
