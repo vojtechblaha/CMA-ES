@@ -124,6 +124,7 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
 
         self.top_fraction = float(top_fraction)
         self.uncertainty_fraction = float(uncertainty_fraction)
+        self.iter = 0
 
     def select_and_evaluate(
         self,
@@ -163,6 +164,8 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
             surrogate_x=surrogate_x,
             surrogate_y=surrogate_y,
         )
+
+        self.iter += 1
 
         return EvolutionControlResult(
             true_evaluated=true_pop,

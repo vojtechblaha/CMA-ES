@@ -774,6 +774,104 @@ def format_coco_log_x_axis(ax, xmin: float, xmax: float) -> None:
     ax.xaxis.set_minor_locator(FixedLocator(minor))
     ax.xaxis.set_minor_formatter(NullFormatter())
 
+def merge_hit_data(items: list[HitData]) -> HitData | None:
+    items = [x for x in items if x is not None and x.n_pairs > 0]
+    if not items:
+        return None
+
+    hits = np.concatenate([x.hits for x in items if len(x.hits)])
+    hits = np.asarray(sorted(hits), dtype=float)
+
+    return HitData(
+        hits=hits,
+        n_pairs=sum(x.n_pairs for x in items),
+        n_runs=sum(x.n_runs for x in items),
+    )
+
+def plot_aggregate_ecdf(
+    dim: int,
+    budget: int,
+    funcs: range,
+    local_label: str,
+    local_hits_all: list[HitData],
+    ref_hits_all: dict[str, list[HitData]],
+    out_dir: Path,
+    show: bool,
+    label_refs: bool,
+    linear_x: bool,
+) -> None:
+    plt.figure(figsize=(8, 5))
+
+    ref_plotted = 0
+    for label, hit_list in ref_hits_all.items():
+        merged = merge_hit_data(hit_list)
+        if merged is None:
+            continue
+
+        x, y = ecdf_curve_from_hits(merged, budget, dim, linear_x)
+        if not x.size:
+            continue
+
+        plt.step(
+            x, y,
+            where="post",
+            color="0.72",
+            alpha=0.45,
+            linewidth=0.4,
+            label=label if label_refs else ("COCO/BBOB reference algorithms" if ref_plotted == 0 else None),
+            zorder=1,
+        )
+        ref_plotted += 1
+
+    local_merged = merge_hit_data(local_hits_all)
+
+    if local_merged is not None:
+        x, y = ecdf_curve_from_hits(local_merged, budget, dim, linear_x)
+        plt.step(
+            x, y,
+            where="post",
+            color="black",
+            linewidth=0.4,
+            label=f"{local_label} (runs={local_merged.n_runs})",
+            zorder=5,
+        )
+
+    if linear_x:
+        xlabel = "number of function evaluations"
+        xmin, xmax = 0.0, float(budget)
+    else:
+        xlabel = "log10(number of function evaluations / dimension)"
+        xmin, xmax = 0.0, np.log10(max(float(budget) / float(dim), 1.0))
+
+    plt.title(f"BBOB f{funcs.start}–f{funcs.stop - 1}, dim={dim}: ECDF over all functions")
+    plt.xlabel(xlabel)
+    plt.ylabel("fraction of function-instance-target pairs")
+
+    ax = plt.gca()
+    plt.xlim(xmin, xmax)
+    plt.ylim(0, 1.02)
+
+    if not linear_x:
+        format_coco_log_x_axis(ax, xmin, xmax)
+
+    ax.yaxis.set_major_locator(MultipleLocator(0.2))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.05))
+    ax.grid(True, which="major", alpha=0.45, linewidth=0.8)
+    ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
+
+    plt.legend(loc="best")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"bbob_f{funcs.start}_to_f{funcs.stop - 1}_dim{dim}_ecdf_aggregate.png"
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=180)
+    print(f"[OK] saved {out_path}  (refs plotted={ref_plotted})")
+
+    if show:
+        plt.show()
+
+    plt.close()
 
 def plot_one(
     func: int,
@@ -862,6 +960,9 @@ def main() -> int:
     if not args.no_refs and not ref_roots:
         print("[WARN] no reference roots loaded; plots will contain only local exdata")
 
+    local_hits_all: list[HitData] = []
+    ref_hits_all: dict[str, list[HitData]] = {}
+
     for func in range(args.first_func, args.last_func + 1):
         local_folder = newest_local_function_dir(args.exdata, args.dim, func, args.exp_name)
         local_hits = None
@@ -874,6 +975,9 @@ def main() -> int:
             hits, n_pairs = hitting_times(local_runs, targets, args.budget)
             local_hits = HitData(hits=hits, n_pairs=n_pairs, n_runs=len(local_runs)) if n_pairs else None
 
+        if local_hits is not None:
+            local_hits_all.append(local_hits)
+
         ref_hits: dict[str, HitData] = {}
 
         for label, root in ref_roots.items():
@@ -884,6 +988,7 @@ def main() -> int:
 
             if hd is not None:
                 ref_hits[label] = hd
+                ref_hits_all.setdefault(label, []).append(hd)
                 continue
 
             print(f"[WARN] f{func}: cocopp failed for reference {label}, falling back to manual parser")
@@ -896,11 +1001,13 @@ def main() -> int:
             hits, n_pairs = hitting_times(fallback_runs, targets, args.budget)
 
             if n_pairs:
-                ref_hits[label] = HitData(
+                hd = HitData(
                     hits=hits,
                     n_pairs=n_pairs,
                     n_runs=len(fallback_runs),
                 )
+                ref_hits[label] = hd
+                ref_hits_all.setdefault(label, []).append(hd)
 
         plot_one(
             func=func,
@@ -915,6 +1022,20 @@ def main() -> int:
             label_refs=args.label_refs,
             linear_x=args.linear_x,
         )
+
+    plot_aggregate_ecdf(
+        dim=args.dim,
+        budget=args.budget,
+        funcs=range(args.first_func, args.last_func + 1),
+        local_label=args.local_label,
+        local_hits_all=local_hits_all,
+        ref_hits_all=ref_hits_all,
+        out_dir=args.out,
+        show=args.show,
+        label_refs=args.label_refs,
+        linear_x=args.linear_x,
+    )
+
     return 0
 
 
