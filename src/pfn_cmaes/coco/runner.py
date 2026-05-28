@@ -50,28 +50,32 @@ class CocoExperimentRunner:
         summaries: list[RunSummary] = []
         observer = self._build_observer()
 
-        for instance_id in instance_ids:
-            suite = cocoex.Suite(
-                "bbob",
-                "",
-                (
-                    f"dimensions:{run_cfg.dimension} "
-                    f"function_indices:{run_cfg.function_id} "
-                    f"instance_indices:{instance_id}"
-                ),
-            )
-            for problem in suite:
-                wrapped_problem = CocoProblemWrapper(problem)
-                if observer is not None:
-                    wrapped_problem = wrapped_problem.observe_with(observer)
+        instances_list = list(instance_ids)
+        if len(instances_list) == 1:
+            instances_str = str(instances_list[0])
+        else:
+            instances_str = f"{min(instances_list)}-{max(instances_list)}"
 
-                cfg = replace(
-                    self.base_config,
-                    run=replace(self.base_config.run, instance_id=instance_id),
-                )
-                experiment = PFNSurrogateExperiment(cfg)
-                summary = experiment.run(wrapped_problem)
-                summaries.append(summary)
+        suite = cocoex.Suite(
+            "bbob",
+            f"instances: {instances_str}",
+            f"dimensions: {run_cfg.dimension} function_indices: {run_cfg.function_id}"
+        )
+
+        for problem in suite:
+            current_instance_id = problem.id_instance
+
+            wrapped_problem = CocoProblemWrapper(problem)
+            if observer is not None:
+                wrapped_problem = wrapped_problem.observe_with(observer)
+
+            cfg = replace(
+                self.base_config,
+                run=replace(self.base_config.run, instance_id=current_instance_id),
+            )
+            experiment = PFNSurrogateExperiment(cfg)
+            summary = experiment.run(wrapped_problem)
+            summaries.append(summary)
 
         return summaries
 
