@@ -80,6 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cpu")
 
     parser.add_argument("--max_train_size", type=int, default=100)
+    parser.add_argument("--max_train_size_ratio", type=float, default=None)
     parser.add_argument("--recent_fraction", type=float, default=0.35)
     parser.add_argument("--top_fraction", type=float, default=0.4)
     parser.add_argument("--uncertainty_fraction", type=float, default=0.2)
@@ -99,6 +100,7 @@ def build_surrogate_specs(args) -> list[SurrogateSpec]:
             surrogate_kwargs={
                 "min_train_size": 5,
                 "max_train_size": args.max_train_size,
+                "max_train_size_ratio": args.max_train_size_ratio,
                 "selection_mode": "hybrid",
                 "recent_fraction": args.recent_fraction,
                 "device": "cuda",

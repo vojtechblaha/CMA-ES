@@ -1,6 +1,7 @@
 import os
 import argparse
 from PIL import Image, ImageDraw, ImageFont
+from glob import glob
 
 def create_plot_grid():
     # Nastavení argumentů příkazové řádky
@@ -23,13 +24,18 @@ def create_plot_grid():
     CROP_RIGHT = 24
     
     # Nastavení velikosti postranních panelů pro popisky (v pixelech)
-    LABEL_COLUMN_WIDTH = 150  # Šířka levého sloupce pro názvy složek
+    LABEL_COLUMN_WIDTH = 600  # Šířka levého sloupce pro názvy složek
     LABEL_ROW_HEIGHT = 60     # Výška horního řádku pro čísla funkcí
     FONT_SIZE = 40 
     
     # 1. Krok: Zjištění rozměrů jednoho oříznutého obrázku
-    first_folder = f"coco_ecdf_plots_{args.folders[0]}"
-    first_img_path = os.path.join(base_dir, first_folder, f"bbob_f{args.start_f}_dim5_ecdf.png")
+    first_folder = f"{args.folders[0]}"
+
+    matches = sorted(glob(os.path.join(base_dir, first_folder, f"bbob_f{args.start_f}_dim*_ecdf.png")))
+    if matches:
+        first_img_path = matches[0]
+    else:
+        first_img_path = None
     
     if not os.path.exists(first_img_path):
         print(f"Chyba: Vzorový obrázek neexistuje: {first_img_path}")
@@ -86,7 +92,7 @@ def create_plot_grid():
 
     # 4. Krok: Průchod složkami, vkládání obrázků a levých popisků (osa Y)
     for y_idx, folder_suffix in enumerate(args.folders):
-        folder_name = f"coco_ecdf_plots_{folder_suffix}"
+        folder_name = f"{folder_suffix}"
         folder_path = os.path.join(base_dir, folder_name)
         
         # Vykreslení textu složky do levého sloupce
@@ -105,8 +111,11 @@ def create_plot_grid():
         
         # Vkládání jednotlivých oříznutých grafů
         for x_idx, f_num in enumerate(functions):
-            img_name = f"bbob_f{f_num}_dim5_ecdf.png"
-            img_path = os.path.join(folder_path, img_name)
+            matches = sorted(glob(os.path.join(folder_path, f"bbob_f{f_num}_dim*_ecdf.png")))
+            if matches:
+                img_path = matches[0]
+            else:
+                img_path = None
             
             if os.path.exists(img_path):
                 with Image.open(img_path) as img:

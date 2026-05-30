@@ -62,10 +62,14 @@ def _select_subset(
     train_y: np.ndarray,
     query_x: np.ndarray,
     max_train_size: int,
+    max_train_size_ratio: float,
     selection_mode: SelectionMode,
     recent_fraction: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     n = len(train_x)
+
+    if max_train_size_ratio is not None and 0.0 < max_train_size_ratio < 1.0:
+        max_train_size = int(round(n * max_train_size_ratio))
 
     if max_train_size <= 0:
         raise ValueError("max_train_size must be positive.")
@@ -140,6 +144,7 @@ class TabPFNSurrogate(SurrogateModel):
 
     min_train_size: int = 5
     max_train_size: int = 1000
+    max_train_size_ratio: float | None = None
     selection_mode: SelectionMode = "hybrid"
     recent_fraction: float = 0.35
 
@@ -236,6 +241,7 @@ class TabPFNSurrogate(SurrogateModel):
             train_y=train_y,
             query_x=query_x,
             max_train_size=self.max_train_size,
+            max_train_size_ratio=self.max_train_size_ratio,
             selection_mode=self.selection_mode,
             recent_fraction=self.recent_fraction,
         )

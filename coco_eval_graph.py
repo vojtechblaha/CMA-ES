@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--debug-refs", action="store_true", help="Print detailed reference-loading diagnostics")
     p.add_argument("--label-refs", action="store_true", help="Show individual labels for reference algorithms")
 
-    p.add_argument("--out", type=Path, default=Path("coco_ecdf_plots"), help="Output directory for PNG plots")
+    p.add_argument("--out", type=Path, default=Path("coco_plots"), help="Output directory for PNG plots")
     p.add_argument("--show", action="store_true", help="Show plots interactively in addition to saving PNG files")
     p.add_argument("--local-label", default="local exdata", help="Legend label for your local data")
     p.add_argument("--linear-x", action="store_true",
@@ -776,11 +776,17 @@ def format_coco_log_x_axis(ax, xmin: float, xmax: float) -> None:
 
 def merge_hit_data(items: list[HitData]) -> HitData | None:
     items = [x for x in items if x is not None and x.n_pairs > 0]
+
     if not items:
         return None
 
-    hits = np.concatenate([x.hits for x in items if len(x.hits)])
-    hits = np.asarray(sorted(hits), dtype=float)
+    hit_arrays = [x.hits for x in items if len(x.hits)]
+
+    if len(hit_arrays) == 0:
+        hits = np.empty((0,), dtype=float)
+    else:
+        hits = np.concatenate(hit_arrays)
+        hits = np.asarray(sorted(hits), dtype=float)
 
     return HitData(
         hits=hits,
@@ -963,6 +969,8 @@ def main() -> int:
     local_hits_all: list[HitData] = []
     ref_hits_all: dict[str, list[HitData]] = {}
 
+    out_dir = Path(str(args.out) + "/" + args.exp_name)
+
     for func in range(args.first_func, args.last_func + 1):
         local_folder = newest_local_function_dir(args.exdata, args.dim, func, args.exp_name)
         local_hits = None
@@ -1017,7 +1025,7 @@ def main() -> int:
             local_label=args.local_label,
             local_hits=local_hits,
             ref_hits=ref_hits,
-            out_dir=args.out,
+            out_dir=out_dir,
             show=args.show,
             label_refs=args.label_refs,
             linear_x=args.linear_x,
@@ -1030,7 +1038,7 @@ def main() -> int:
         local_label=args.local_label,
         local_hits_all=local_hits_all,
         ref_hits_all=ref_hits_all,
-        out_dir=args.out,
+        out_dir=out_dir,
         show=args.show,
         label_refs=args.label_refs,
         linear_x=args.linear_x,
