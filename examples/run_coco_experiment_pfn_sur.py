@@ -84,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--recent_fraction", type=float, default=0.35)
     parser.add_argument("--top_fraction", type=float, default=0.4)
     parser.add_argument("--uncertainty_fraction", type=float, default=0.2)
+    parser.add_argument("--evolution_control_regime", type=str, default="static")
 
     return parser.parse_args()
 
@@ -112,6 +113,7 @@ def build_surrogate_specs(args) -> list[SurrogateSpec]:
                 #"fraction": 0.5,
                 "top_fraction": args.top_fraction,
                 "uncertainty_fraction": args.uncertainty_fraction,
+                "regime": args.evolution_control_regime,
             },
         )
     ]

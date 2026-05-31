@@ -116,6 +116,7 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
         self,
         top_fraction: float = 0.3,
         uncertainty_fraction: float = 0.2,
+        regime = "static", # static / adaptive
     ) -> None:
         if not (0.0 < top_fraction <= 1.0):
             raise ValueError("top_fraction must satisfy 0 < top_fraction <= 1")
@@ -124,7 +125,8 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
 
         self.top_fraction = float(top_fraction)
         self.uncertainty_fraction = float(uncertainty_fraction)
-        self.iter = 0
+        self.true_evals = 0
+        self.regime = regime
 
     def select_and_evaluate(
         self,
@@ -134,7 +136,30 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
         n = len(surrogate_population.y_pred)
         ordered = surrogate_population.sorted()
 
-        k_top = max(1, int(np.ceil(self.top_fraction * n)))
+        top_frac = self.top_fraction
+        if self.regime == "adaptive":
+            # Example adaptive scheme: increase top fraction as we do more true evals
+            top_frac = min(1.0, max(self.top_fraction, 0.5 * np.log10(self.true_evals / max(1, n))))
+            print("Adaptive top fraction:", top_frac)
+        elif self.regime == "manual":
+            if self.true_evals > 4000:
+                top_frac = 0.9
+            elif self.true_evals > 2000:
+                top_frac = 0.8
+            elif self.true_evals > 1000:
+                top_frac = 0.7
+            elif self.true_evals > 400:
+                top_frac = 0.6
+            elif self.true_evals > 300:
+                top_frac = 0.5
+            elif self.true_evals > 200:
+                top_frac = 0.4
+            else:
+                top_frac = 0.3
+            top_frac = min(1.0, max(self.top_fraction, top_frac))       
+            print("Manual top fraction:", top_frac)
+
+        k_top = max(1, int(np.ceil(top_frac * n)))
         top_indices = list(range(k_top))
 
         uncertainty = getattr(ordered, "uncertainty", None)
@@ -153,6 +178,7 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
         true_x = ordered.x[chosen_mask]
         true_y = np.asarray([objective(x) for x in true_x], dtype=float)
         true_pop = EvaluatedPopulation(x=true_x, y=true_y).sorted()
+        self.true_evals += len(true_y)
 
         surrogate_x = ordered.x[~chosen_mask]
         surrogate_y = ordered.y_pred[~chosen_mask]
@@ -164,8 +190,6 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
             surrogate_x=surrogate_x,
             surrogate_y=surrogate_y,
         )
-
-        self.iter += 1
 
         return EvolutionControlResult(
             true_evaluated=true_pop,
