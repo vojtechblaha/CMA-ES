@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_weight_decay", type=float, default=1e-5)
     parser.add_argument("--train_hidden_dim", type=int, default=128)
     parser.add_argument("--train_max_records", type=int, default=0)
+    parser.add_argument("--train_shuffle_buffer", type=int, default=4096)
+    parser.add_argument("--train_steps_per_epoch", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
 
     return parser.parse_args()
@@ -437,6 +439,9 @@ def maybe_train_decision_model(args: argparse.Namespace) -> None:
         hidden_dim=args.train_hidden_dim,
         device=args.device,
         max_records=None if args.train_max_records <= 0 else args.train_max_records,
+        shuffle_buffer_size=args.train_shuffle_buffer,
+        steps_per_epoch=None if args.train_steps_per_epoch <= 0 else args.train_steps_per_epoch,
+        seed=args.seed,
     )
 
     train_decision_model(

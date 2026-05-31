@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, IterableDataset
 
 from ..decision.pfn_model import PFNDecisionConfig, PFNStateFeaturizer
 from ..stubs.decision_models import PFNBackboneConfig, SetConditionedPFNBackbone
@@ -109,6 +110,9 @@ class DecisionTrainingConfig:
     device: str = "cpu"
     checkpoint_dirname: str = "models"
     max_records: int | None = None
+    shuffle_buffer_size: int = 4096
+    steps_per_epoch: int | None = None
+    seed: int = 0
 
     comparable_margin: float = 0.10
     min_positive_labels: int = 1
@@ -116,9 +120,115 @@ class DecisionTrainingConfig:
     print_class_stats: bool = True
 
 
-class DecisionTrainingDataset(Dataset):
+TrainingSample = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+
+
+def _record_to_training_sample(
+    record: dict[str, Any],
+    *,
+    surrogate_names: Sequence[str],
+    featurizer: PFNStateFeaturizer,
+    training_config: DecisionTrainingConfig,
+) -> TrainingSample:
+    state = GenerationState(
+        generation_index=int(record["generation_index"]),
+        evaluated_history_x=np.asarray(record["history_x"], dtype=np.float32),
+        evaluated_history_y=np.asarray(record["history_y"], dtype=np.float32),
+        candidate_x=np.asarray(record["candidate_x"], dtype=np.float32),
+        incumbent_x=np.asarray(record["incumbent_x"], dtype=np.float32),
+        incumbent_y=float(record["incumbent_y"]),
+        optimizer_state=dict(record["optimizer_state"]),
+        metadata=dict(record.get("metadata", {})),
+    )
+
+    context_x, context_y, candidate_x, action_ids, _ = featurizer.build(
+        state=state,
+        surrogate_names=list(surrogate_names),
+    )
+
+    target_labels = _build_multilabel_targets(
+        surrogate_scores=record["surrogate_scores"],
+        surrogate_names=surrogate_names,
+        comparable_margin=training_config.comparable_margin,
+        min_positive=training_config.min_positive_labels,
+    )
+
+    return context_x, context_y, candidate_x, action_ids, target_labels
+
+
+def _iter_valid_training_records(
+    *,
+    experiment_root: Path,
+    target_dimension: int,
+    held_out_function_id: int,
+    surrogate_names: Sequence[str],
+    max_records: int | None = None,
+) -> Iterator[dict[str, Any]]:
+    yielded = 0
+    skipped_invalid = 0
+
+    for dataset_file in find_dataset_files(experiment_root):
+        with dataset_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                rec = json.loads(line)
+
+                if int(rec["dimension"]) != target_dimension:
+                    continue
+                if int(rec["function_id"]) == held_out_function_id:
+                    continue
+
+                if not _is_valid_record(rec, surrogate_names):
+                    skipped_invalid += 1
+                    continue
+
+                yield rec
+                yielded += 1
+
+                if max_records is not None and yielded >= max_records:
+                    print(
+                        f"[train_decision_model] streamed {yielded} valid records "
+                        f"(skipped_invalid={skipped_invalid})"
+                    )
+                    return
+
+    print(f"[train_decision_model] streamed {yielded} valid records (skipped_invalid={skipped_invalid})")
+
+
+def _shuffle_buffered(
+    samples: Iterator[TrainingSample],
+    *,
+    buffer_size: int,
+    seed: int,
+) -> Iterator[TrainingSample]:
+    if buffer_size <= 1:
+        yield from samples
+        return
+
+    rng = random.Random(seed)
+    buffer: list[TrainingSample] = []
+
+    for sample in samples:
+        if len(buffer) < buffer_size:
+            buffer.append(sample)
+            continue
+
+        idx = rng.randrange(len(buffer))
+        yield buffer[idx]
+        buffer[idx] = sample
+
+    rng.shuffle(buffer)
+    yield from buffer
+
+
+class StreamingDecisionTrainingDataset(IterableDataset):
     """
-    Each sample contains:
+    Streams JSONL records and featurizes them on demand.
+
+    Each yielded sample contains:
     - context_x
     - context_y
     - candidate_x
@@ -128,48 +238,45 @@ class DecisionTrainingDataset(Dataset):
 
     def __init__(
         self,
-        records: list[dict[str, Any]],
+        *,
+        experiment_root: Path,
+        target_dimension: int,
+        held_out_function_id: int,
         surrogate_names: Sequence[str],
         pfn_config: PFNDecisionConfig,
         training_config: DecisionTrainingConfig,
+        epoch: int,
     ) -> None:
-        self.records = records
+        self.experiment_root = experiment_root
+        self.target_dimension = int(target_dimension)
+        self.held_out_function_id = int(held_out_function_id)
         self.surrogate_names = list(surrogate_names)
         self.featurizer = PFNStateFeaturizer(pfn_config)
         self.training_config = training_config
-        self.samples: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+        self.epoch = int(epoch)
 
-        for record in self.records:
-            state = GenerationState(
-                generation_index=int(record["generation_index"]),
-                evaluated_history_x=np.asarray(record["history_x"], dtype=np.float32),
-                evaluated_history_y=np.asarray(record["history_y"], dtype=np.float32),
-                candidate_x=np.asarray(record["candidate_x"], dtype=np.float32),
-                incumbent_x=np.asarray(record["incumbent_x"], dtype=np.float32),
-                incumbent_y=float(record["incumbent_y"]),
-                optimizer_state=dict(record["optimizer_state"]),
-                metadata=dict(record.get("metadata", {})),
-            )
-
-            context_x, context_y, candidate_x, action_ids, _ = self.featurizer.build(
-                state=state,
+    def __iter__(self) -> Iterator[TrainingSample]:
+        records = _iter_valid_training_records(
+            experiment_root=self.experiment_root,
+            target_dimension=self.target_dimension,
+            held_out_function_id=self.held_out_function_id,
+            surrogate_names=self.surrogate_names,
+            max_records=self.training_config.max_records,
+        )
+        samples = (
+            _record_to_training_sample(
+                record,
                 surrogate_names=self.surrogate_names,
+                featurizer=self.featurizer,
+                training_config=self.training_config,
             )
-
-            target_labels = _build_multilabel_targets(
-                surrogate_scores=record["surrogate_scores"],
-                surrogate_names=self.surrogate_names,
-                comparable_margin=self.training_config.comparable_margin,
-                min_positive=self.training_config.min_positive_labels,
-            )
-
-            self.samples.append((context_x, context_y, candidate_x, action_ids, target_labels))
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        return self.samples[idx]
+            for record in records
+        )
+        yield from _shuffle_buffered(
+            samples,
+            buffer_size=self.training_config.shuffle_buffer_size,
+            seed=self.training_config.seed + self.epoch,
+        )
 
 
 def collate_variable_set_batch(
@@ -308,7 +415,7 @@ def build_checkpoint_path(
 
 
 def _print_target_statistics(
-    records: list[dict[str, Any]],
+    records: Sequence[dict[str, Any]],
     surrogate_names: Sequence[str],
     training_config: DecisionTrainingConfig,
 ) -> None:
@@ -339,6 +446,73 @@ def _print_target_statistics(
         print(f"  - {name}: {positive_counts[name]}")
 
 
+def _print_streaming_target_statistics(
+    *,
+    experiment_root: Path,
+    target_dimension: int,
+    held_out_function_id: int,
+    surrogate_names: Sequence[str],
+    training_config: DecisionTrainingConfig,
+) -> None:
+    positive_counts = {name: 0 for name in surrogate_names}
+    oracle_counts = {name: 0 for name in surrogate_names}
+    total = 0
+
+    for rec in _iter_valid_training_records(
+        experiment_root=experiment_root,
+        target_dimension=target_dimension,
+        held_out_function_id=held_out_function_id,
+        surrogate_names=surrogate_names,
+        max_records=training_config.max_records,
+    ):
+        scores = rec["surrogate_scores"]
+        labels = _build_multilabel_targets(
+            surrogate_scores=scores,
+            surrogate_names=surrogate_names,
+            comparable_margin=training_config.comparable_margin,
+            min_positive=training_config.min_positive_labels,
+        )
+
+        best_idx = int(np.argmax(np.asarray([float(scores[name]) for name in surrogate_names], dtype=np.float32)))
+        oracle_counts[surrogate_names[best_idx]] += 1
+
+        for name, label in zip(surrogate_names, labels, strict=True):
+            positive_counts[name] += int(label > 0.5)
+
+        total += 1
+
+    print(f"[train_decision_model] target statistics from {total} streamed records:")
+    print("[train_decision_model] oracle best counts:")
+    for name in surrogate_names:
+        print(f"  - {name}: {oracle_counts[name]}")
+
+    print("[train_decision_model] multi-label positive counts:")
+    for name in surrogate_names:
+        print(f"  - {name}: {positive_counts[name]}")
+
+
+def _first_valid_training_record(
+    *,
+    experiment_root: Path,
+    target_dimension: int,
+    held_out_function_id: int,
+    surrogate_names: Sequence[str],
+) -> dict[str, Any]:
+    for record in _iter_valid_training_records(
+        experiment_root=experiment_root,
+        target_dimension=target_dimension,
+        held_out_function_id=held_out_function_id,
+        surrogate_names=surrogate_names,
+        max_records=1,
+    ):
+        return record
+
+    raise ValueError(
+        f"No training records found for dimension={target_dimension} "
+        f"excluding function_id={held_out_function_id} in {experiment_root}."
+    )
+
+
 def train_decision_model(
     *,
     experiment_root: Path,
@@ -348,44 +522,26 @@ def train_decision_model(
     pfn_config: PFNDecisionConfig,
     training_config: DecisionTrainingConfig,
 ) -> Path:
-    records = load_training_records(
+    first_record = _first_valid_training_record(
         experiment_root=experiment_root,
         target_dimension=target_dimension,
         held_out_function_id=held_out_function_id,
         surrogate_names=surrogate_names,
-        max_records=training_config.max_records,
     )
 
-    if not records:
-        raise ValueError(
-            f"No training records found for dimension={target_dimension} "
-            f"excluding function_id={held_out_function_id} in {experiment_root}."
-        )
-
     if training_config.print_class_stats:
-        _print_target_statistics(
-            records=records,
+        _print_streaming_target_statistics(
+            experiment_root=experiment_root,
+            target_dimension=target_dimension,
+            held_out_function_id=held_out_function_id,
             surrogate_names=surrogate_names,
             training_config=training_config,
         )
 
     context_dim, candidate_dim = infer_model_dims_from_records(
-        records=records,
+        records=[first_record],
         surrogate_names=surrogate_names,
         pfn_config=pfn_config,
-    )
-
-    dataset = DecisionTrainingDataset(
-        records=records,
-        surrogate_names=surrogate_names,
-        pfn_config=pfn_config,
-        training_config=training_config,
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=training_config.batch_size,
-        shuffle=True,
-        collate_fn=collate_variable_set_batch,
     )
 
     device = torch.device(training_config.device)
@@ -422,6 +578,21 @@ def train_decision_model(
 
     backbone.train()
     for epoch in range(training_config.epochs):
+        dataset = StreamingDecisionTrainingDataset(
+            experiment_root=experiment_root,
+            target_dimension=target_dimension,
+            held_out_function_id=held_out_function_id,
+            surrogate_names=surrogate_names,
+            pfn_config=pfn_config,
+            training_config=training_config,
+            epoch=epoch,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=training_config.batch_size,
+            collate_fn=collate_variable_set_batch,
+        )
+
         epoch_loss = 0.0
         num_batches = 0
 
@@ -460,8 +631,20 @@ def train_decision_model(
             epoch_loss += float(loss.item())
             num_batches += 1
 
+            if training_config.steps_per_epoch is not None and num_batches >= training_config.steps_per_epoch:
+                break
+
+        if num_batches == 0:
+            raise ValueError(
+                f"No training batches produced for dimension={target_dimension} "
+                f"excluding function_id={held_out_function_id} in {experiment_root}."
+            )
+
         mean_loss = epoch_loss / max(num_batches, 1)
-        print(f"[train_decision_model] epoch={epoch + 1}/{training_config.epochs} loss={mean_loss:.6f}")
+        print(
+            f"[train_decision_model] epoch={epoch + 1}/{training_config.epochs} "
+            f"batches={num_batches} loss={mean_loss:.6f}"
+        )
 
     checkpoint_path = build_checkpoint_path(
         experiment_root=experiment_root,
@@ -511,5 +694,5 @@ def train_decision_model(
         checkpoint_path,
     )
 
-    print(f"[train_decision_model] saved checkpoint to {checkpoint_path} using {len(records)} records")
+    print(f"[train_decision_model] saved checkpoint to {checkpoint_path}")
     return checkpoint_path
