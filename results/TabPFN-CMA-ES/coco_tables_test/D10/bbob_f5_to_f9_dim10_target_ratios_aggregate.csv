@@ -1,0 +1,8 @@
+algorithm;key;source;func;dim;runs;pairs;evals_1000;evals_2000;evals_3000;evals_4000;evals_5000
+Our approach;pfns_sig_10_dim_10_test;local;f5-f9;10;75;3825;0.2842;0.3927;0.4264;0.4886;0.6146
+BIPOP-saACM-k (Loshchilov);BIPOP-saACM-k_loshchilov_noiseless;reference;f5-f9;10;75;3825;0.3579;0.7354;0.8282;0.9365;0.9754
+RF5-CMA-ES (Bajer);RF5-CMAES_Bajer_2013instances;reference;f5-f9;10;75;3825;0.1017;0.1616;0.1804;0.1804;0.1804
+DTS-CMA-ES (Bajer);DTS-CMA-ES_005-2pop_v26_1model_Bajer;reference;f5-f9;10;75;3825;0.3446;0.6492;0.6824;0.6824;0.6824
+CMA-ES-2019 (Hansen);CMA-ES-2019_Hansen;reference;f5-f9;10;75;3825;0.3341;0.4034;0.5263;0.6839;0.8505
+lq-CMA-ES (Hansen);SLSQP+lq-CMA-ES_Hansen;reference;f5-f9;10;75;3825;0.5485;0.6837;0.7608;0.8486;0.8546
+lq-CMA-ES (Hansen);lq-CMA-ES_Hansen;reference;f5-f9;10;75;3825;0.3668;0.7480;0.8353;0.9556;0.9765

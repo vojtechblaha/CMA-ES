@@ -70,9 +70,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("dim", type=int, help="BBOB dimension, e.g. 5")
     p.add_argument("first_func", type=int, help="First BBOB function id, inclusive")
     p.add_argument("last_func", type=int, help="Last BBOB function id, inclusive")
-    p.add_argument("exp_name", type=str, help="Last BBOB function id, inclusive")
 
-    p.add_argument("--budget", type=int, default=1000,
+    p.add_argument(
+        "--local-exp",
+        action="append",
+        default=[],
+        help="Local experiment spec: exp_name,label,color. Example: pfn_sur,my PFN,black",
+    )
+
+    p.add_argument(
+        "--coco-alg",
+        action="append",
+        default=[],
+        help="COCO algorithm spec: archive_search,label,color. Example: DTS-CMA-ES,DTS-CMA-ES,red",
+    )
+
+    p.add_argument("--max_evals_per_dim", type=int, default=500,
                    help="Maximum raw number of function evaluations; default 1000")
     p.add_argument("--targets", type=float, nargs="*", default=None,
                    help="Target precisions f-fopt. Default: 51 log-spaced COCO-like targets 1e2 ... 1e-8")
@@ -109,6 +122,40 @@ def parse_args() -> argparse.Namespace:
                    help="Use raw evaluations on x-axis instead of COCO log10(evals / DIM). Not recommended.")
     return p.parse_args()
 
+
+@dataclass(frozen=True)
+class PlotSpec:
+    key: str
+    label: str
+    color: str
+
+
+def parse_plot_specs(values: list[str]) -> list[PlotSpec]:
+    specs = []
+
+    for v in values:
+        parts = [x.strip() for x in v.split(",")]
+
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid spec {v!r}. Expected format: key,label,color"
+            )
+
+        specs.append(PlotSpec(
+            key=parts[0],
+            label=parts[1],
+            color=parts[2],
+        ))
+
+    return specs
+
+def match_spec(label: str, specs: dict[str, PlotSpec]) -> PlotSpec | None:
+    label_low = label.lower()
+    for spec in specs.values():
+        key_low = spec.key.lower()
+        if key_low == label_low:
+            return spec
+    return None
 
 def load_cocopp_datasets(root: Path):
     import cocopp
@@ -798,9 +845,10 @@ def plot_aggregate_ecdf(
     dim: int,
     budget: int,
     funcs: range,
-    local_label: str,
-    local_hits_all: list[HitData],
+    local_hits_all: dict[str, list[HitData]],
+    local_specs: dict[str, PlotSpec],
     ref_hits_all: dict[str, list[HitData]],
+    ref_specs: dict[str, PlotSpec],
     out_dir: Path,
     show: bool,
     label_refs: bool,
@@ -809,7 +857,8 @@ def plot_aggregate_ecdf(
     plt.figure(figsize=(8, 5))
 
     ref_plotted = 0
-    for label, hit_list in ref_hits_all.items():
+    grey_label_used = False
+    for key, hit_list in ref_hits_all.items():
         merged = merge_hit_data(hit_list)
         if merged is None:
             continue
@@ -818,27 +867,34 @@ def plot_aggregate_ecdf(
         if not x.size:
             continue
 
-        plt.step(
-            x, y,
-            where="post",
-            color="0.72",
-            alpha=0.45,
-            linewidth=0.4,
-            label=label if label_refs else ("COCO/BBOB reference algorithms" if ref_plotted == 0 else None),
-            zorder=1,
-        )
+        spec = match_spec(key, ref_specs)
+
+        if spec is not None:
+            plt.step(x, y, where="post", color=spec.color, linewidth=0.6,
+                    label=spec.label, zorder=4)
+        else:
+            plt.step(x, y, where="post", color="0.72", alpha=0.35,
+                    linewidth=0.4,
+                    label="Other COCO/BBOB reference algorithms" if not grey_label_used else None,
+                    zorder=1)
+            grey_label_used = True
         ref_plotted += 1
 
-    local_merged = merge_hit_data(local_hits_all)
+    for key, hit_list in local_hits_all.items():
+        merged = merge_hit_data(hit_list)
+        if merged is None:
+            continue
 
-    if local_merged is not None:
-        x, y = ecdf_curve_from_hits(local_merged, budget, dim, linear_x)
+        spec = local_specs[key]
+        x, y = ecdf_curve_from_hits(merged, budget, dim, linear_x)
+
         plt.step(
-            x, y,
+            x,
+            y,
             where="post",
-            color="black",
-            linewidth=0.4,
-            label=f"{local_label} (runs={local_merged.n_runs})",
+            color=spec.color,
+            linewidth=1.2,
+            label=f"{spec.label}",# (runs={merged.n_runs})",
             zorder=5,
         )
 
@@ -849,9 +905,9 @@ def plot_aggregate_ecdf(
         xlabel = "log10(number of function evaluations / dimension)"
         xmin, xmax = 0.0, np.log10(max(float(budget) / float(dim), 1.0))
 
-    plt.title(f"BBOB f{funcs.start}–f{funcs.stop - 1}, dim={dim}: ECDF over all functions")
-    plt.xlabel(xlabel)
-    plt.ylabel("fraction of function-instance-target pairs")
+    plt.title(f"BBOB f{funcs.start}–f{funcs.stop - 1}, dim={dim}: mean ECDF over more functions", fontsize=16)
+    plt.xlabel(xlabel, fontsize=15)
+    plt.ylabel("fraction of function-instance-target pairs", fontsize=13)
 
     ax = plt.gca()
     plt.xlim(xmin, xmax)
@@ -865,7 +921,13 @@ def plot_aggregate_ecdf(
     ax.grid(True, which="major", alpha=0.45, linewidth=0.8)
     ax.grid(True, which="minor", alpha=0.18, linewidth=0.5)
 
-    plt.legend(loc="best")
+    handles, labels = plt.gca().get_legend_handles_labels()
+
+    plt.legend(
+        handles[::-1],
+        labels[::-1],
+        loc="best",
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"bbob_f{funcs.start}_to_f{funcs.stop - 1}_dim{dim}_ecdf_aggregate.png"
@@ -884,39 +946,49 @@ def plot_one(
     dim: int,
     budget: int,
     targets: np.ndarray,
-    local_label: str,
-    local_hits: HitData | None,
+    local_hits: dict[str, tuple[HitData, str, str]],
     ref_hits: dict[str, HitData],
+    coco_specs: dict[str, PlotSpec],
     out_dir: Path,
     show: bool,
-    label_refs: bool,
     linear_x: bool,
 ) -> None:
     plt.figure(figsize=(8, 5))
 
     ref_plotted = 0
+    grey_label_used = False
     for label, hit_data in ref_hits.items():
         x, y = ecdf_curve_from_hits(hit_data, budget, dim, linear_x)
         if not x.size:
             continue
-        plt.step(
-            x, y, where="post",
-            color="0.72", alpha=0.45, linewidth=0.4,
-            label=label if label_refs else (f"COCO/BBOB {ref_plotted + 1}+ reference algorithms" if ref_plotted == 0 else None),
-            zorder=1,
-        )
+
+        spec = match_spec(label, coco_specs)
+
+        if spec is not None:
+            plt.step(x, y, where="post", color=spec.color, alpha=0.95,
+                    linewidth=0.6, label=spec.label, zorder=4)
+        else:
+            plt.step(x, y, where="post", color="0.72", alpha=0.35,
+                    linewidth=0.4,
+                    label="Other COCO/BBOB reference algorithms" if not grey_label_used else None,
+                    zorder=1)
+            grey_label_used = True
         ref_plotted += 1
 
-    if local_hits is not None:
-        x, y = ecdf_curve_from_hits(local_hits, budget, dim, linear_x)
-    else:
-        x, y = np.array([]), np.array([])
+    for key, (hit_data, label, color) in local_hits.items():
+        x, y = ecdf_curve_from_hits(hit_data, budget, dim, linear_x)
+        if not x.size:
+            continue
 
-    if x.size and local_hits is not None:
-        plt.step(x, y, where="post", color="black", linewidth=0.4,
-                label=f"{local_label} (runs={local_hits.n_runs})", zorder=5)
-    else:
-        print(f"[WARN] f{func}: no local data to plot")
+        plt.step(
+            x,
+            y,
+            where="post",
+            color=color,
+            linewidth=1.2,
+            label=f"{label}",# (runs={hit_data.n_runs})",
+            zorder=5,
+        )
 
     if linear_x:
         xlabel = "number of function evaluations"
@@ -925,9 +997,9 @@ def plot_one(
         xlabel = "log10(number of function evaluations / dimension)"
         xmin, xmax = 0.0, np.log10(max(float(budget) / float(dim), 1.0))
 
-    plt.title(f"BBOB f{func}, dim={dim}: ECDF of reached instance-target pairs")
-    plt.xlabel(xlabel)
-    plt.ylabel("fraction of instance-target pairs")
+    plt.title(f"BBOB f{func}, dim={dim}: ECDF of reached instance-target pairs", fontsize=16)
+    plt.xlabel(xlabel, fontsize=15)
+    plt.ylabel("fraction of instance-target pairs", fontsize=13)
     ax = plt.gca()
     plt.xlim(xmin, xmax)
     plt.ylim(0, 1.02)
@@ -939,13 +1011,19 @@ def plot_one(
         ax.grid(True, which="both", alpha=0.3)
     ax.yaxis.set_major_locator(MultipleLocator(0.2))
     ax.yaxis.set_minor_locator(MultipleLocator(0.05))
-    plt.legend(loc="best")
+    handles, labels = plt.gca().get_legend_handles_labels()
+
+    plt.legend(
+        handles[::-1],
+        labels[::-1],
+        loc="best",
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"bbob_f{func}_dim{dim}_ecdf.png"
     plt.tight_layout()
     plt.savefig(out_path, dpi=180)
-    local_n = local_hits.n_runs if local_hits is not None else 0
+    local_n = sum(h.n_runs for h, _, _ in local_hits.values())
     print(f"[OK] saved {out_path}  (refs plotted={ref_plotted}, local runs={local_n})")
     if show:
         plt.show()
@@ -954,37 +1032,67 @@ def plot_one(
 
 def main() -> int:
     args = parse_args()
+    args.budget = int(args.max_evals_per_dim) * int(args.dim)
+
     targets = np.asarray(args.targets if args.targets else DEFAULT_TARGETS, dtype=float)
     targets = np.sort(targets)[::-1]
     print(f"[INFO] script version: {VERSION}")
     print(f"[INFO] targets: {len(targets)} from {targets[0]:.1e} to {targets[-1]:.1e}")
     print(f"[INFO] x-axis: {'raw evaluations' if args.linear_x else 'log10(evaluations / DIM)'}; raw budget={args.budget}")
 
+    local_specs_list = parse_plot_specs(args.local_exp)
+    coco_specs_list = parse_plot_specs(args.coco_alg)
+
+    if not local_specs_list:
+        raise ValueError("Musíš zadat aspoň jeden --local-exp exp_name,label,color")
+
+    local_specs = {s.key: s for s in local_specs_list}
+    coco_specs = {s.key: s for s in coco_specs_list}
+
     ref_roots = get_reference_roots(args)
+
     if args.list_refs:
         return 0
     if not args.no_refs and not ref_roots:
         print("[WARN] no reference roots loaded; plots will contain only local exdata")
 
-    local_hits_all: list[HitData] = []
+    local_hits_all: dict[str, list[HitData]] = {s.key: [] for s in local_specs_list}
     ref_hits_all: dict[str, list[HitData]] = {}
 
-    out_dir = Path(str(args.out) + "/" + args.exp_name)
+    out_dir = args.out
 
     for func in range(args.first_func, args.last_func + 1):
-        local_folder = newest_local_function_dir(args.exdata, args.dim, func, args.exp_name)
-        local_hits = None
-        if local_folder is not None:
-            local_hits = cocopp_hit_data(local_folder, args.dim, func, targets, args.budget, debug=args.debug_refs)
+        local_hits_for_plot: dict[str, tuple[HitData, str, str]] = {}
 
-        if local_hits is None:
-            print(f"[WARN] f{func}: cocopp failed for local data, falling back to manual parser")
-            local_runs = load_local_runs(args.exdata, args.dim, func, exp_name=args.exp_name, debug=args.debug_refs)
-            hits, n_pairs = hitting_times(local_runs, targets, args.budget)
-            local_hits = HitData(hits=hits, n_pairs=n_pairs, n_runs=len(local_runs)) if n_pairs else None
+        for spec in local_specs_list:
+            local_folder = newest_local_function_dir(args.exdata, args.dim, func, spec.key)
+            local_hits = None
 
-        if local_hits is not None:
-            local_hits_all.append(local_hits)
+            if local_folder is not None:
+                local_hits = cocopp_hit_data(
+                    local_folder,
+                    args.dim,
+                    func,
+                    targets,
+                    args.budget,
+                    debug=args.debug_refs,
+                )
+
+            if local_hits is None:
+                print(f"[WARN] f{func}: cocopp failed for local {spec.key}, falling back to manual parser")
+                local_runs = load_local_runs(
+                    args.exdata,
+                    args.dim,
+                    func,
+                    exp_name=spec.key,
+                    debug=args.debug_refs,
+                )
+                hits, n_pairs = hitting_times(local_runs, targets, args.budget)
+                local_hits = HitData(hits=hits, n_pairs=n_pairs, n_runs=len(local_runs)) if n_pairs else None
+
+            if local_hits is not None:
+                local_hits_all[spec.key].append(local_hits)
+                local_hits_for_plot[spec.key] = (local_hits, spec.label, spec.color)
 
         ref_hits: dict[str, HitData] = {}
 
@@ -1022,12 +1130,11 @@ def main() -> int:
             dim=args.dim,
             budget=args.budget,
             targets=targets,
-            local_label=args.local_label,
-            local_hits=local_hits,
+            local_hits=local_hits_for_plot,
             ref_hits=ref_hits,
+            coco_specs=coco_specs,
             out_dir=out_dir,
             show=args.show,
-            label_refs=args.label_refs,
             linear_x=args.linear_x,
         )
 
@@ -1035,9 +1142,10 @@ def main() -> int:
         dim=args.dim,
         budget=args.budget,
         funcs=range(args.first_func, args.last_func + 1),
-        local_label=args.local_label,
         local_hits_all=local_hits_all,
+        local_specs=local_specs,
         ref_hits_all=ref_hits_all,
+        ref_specs=coco_specs,
         out_dir=out_dir,
         show=args.show,
         label_refs=args.label_refs,

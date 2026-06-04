@@ -157,7 +157,7 @@ python coco_eval_graph.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 - Warning: Everytime it uses for evaluation the last runs from exdata.
 - Comparing with all algorithms:
 ```bash
-python coco_eval_graph.py exdata 5 23 24 pfn_sur --ref-tags 2009 2010 2012 2013 2014-others 2015-CEC 2015-GECCO 2016 2017 2017-others 2018 2018-others 2019 2020 2021 2022 2023 --cache-dir coco_cache
+python coco_eval_graph.py exdata-meta 5 1 24 --ref-tags 2009 2010 2012 2013 2014-others 2015-CEC 2015-GECCO 2016 2017 2017-others 2018 2018-others 2019 2020 2021 2022 2023 --cache-dir coco_cache --coco-alg "CMA-ES-2019_Hansen,CMA-ES-2019 (Hansen),#4C72B0" --coco-alg "BIPOP-saACM-k_loshchilov_noiseless,BIPOP-saACM-k (Loshchilov),#55A868" --coco-alg "lq-CMA-ES_Hansen,lq-CMA-ES (Hansen),#C44E52" --coco-alg "DTS-CMA-ES_005-2pop_v26_1model_Bajer,DTS-CMA-ES (Bajer),#D81B60" --coco-alg "RF5-CMAES_Bajer_2013instances,RF5-CMA-ES (Bajer),#8172B2" --out coco_plots_test/D5 --max_evals_per_dim 500 --local-exp "pfns_sig_10_dim_5_test,TabPFN-CMA-ES-D5,#FF8C00"
 ```
 
 ### Generating evaluation tables:
@@ -166,6 +166,10 @@ python coco_eval_table.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 ```
 - Generate evalution tables for exdata folder for dimension 5 for functions 1-24, as reference algoritms it uses all algorithm from years 2020 and 2021, as cache folder it uses coco_cache, it computes metrics for budgets 50, ..., 1000.
 - Warning: Everytime it uses for evaluation the last runs from exdata.
+- Comparing with all algorithms:
+```bash
+python coco_eval_table.py exdata-meta 5 1 24 --evals_per_dim 100 200 300 400 500 --ref-tags 2009 2010 2012 2013 2014-others 2015-CEC 2015-GECCO 2016 2017 2017-others 2018 2018-others 2019 2020 2021 2022 2023 --cache-dir coco_cache --coco-alg "CMA-ES-2019_Hansen,CMA-ES-2019 (Hansen),#4C72B0" --coco-alg "BIPOP-saACM-k_loshchilov_noiseless,BIPOP-saACM-k (Loshchilov),#55A868" --coco-alg "lq-CMA-ES_Hansen,lq-CMA-ES (Hansen),#C44E52" --coco-alg "DTS-CMA-ES_005-2pop_v26_1model_Bajer,DTS-CMA-ES (Bajer),#D81B60" --coco-alg "RF5-CMAES_Bajer_2013instances,RF5-CMA-ES (Bajer),#8172B2" --out coco_tables_test/D5 --local-exp "pfns_sig_10_dim_5_test,Our approach,#F9A825"
+```
 
 ## TODO
 - check again overall correctness of algorithm
@@ -174,7 +178,7 @@ python coco_eval_table.py exdata 5 1 24 demo --ref-years 2020 2021 --cache-dir c
 - maybe (if neccesary) - adding out memory loading datasets during PFN training
 - maybe (after the first tests) - adding fine-tuning training of PFN during optimization run
 
-
+## Other commands
 module load python/3.11
 pip install -e . --no-build-isolation
 pip install -e .
@@ -193,3 +197,5 @@ export TMPDIR=/storage/brno2/home/blahavo/tmp
 python -c "from tabpfn import TabPFNRegressor; TabPFNRegressor().fit([[0.0],[1.0]],[0.0,1.0])"
 
 qsub -l select=1:ncpus=1:ngpus=1:mem=8gb:scratch_local=32gb -I
+
+scp -r blahavo@zenith.metacentrum.cz:/storage/brno2/home/blahavo/CMA-ES/exdata C:\CMA-ES\exdata-meta

@@ -1,0 +1,5 @@
+python .\examples\run_coco_experiment_pfn_sur.py --experiment_name pfn_sur_ts_100_ps_8 --dimension 5 --instances_start 1 --instances_end 15 --seed 42 --max_generations 10000 --max_true_evals 1100 --pop_size 8 --function_id 19
+python .\examples\run_coco_experiment_pfn_sur.py --experiment_name pfn_sur_ts_100_ps_8 --dimension 5 --instances_start 1 --instances_end 15 --seed 42 --max_generations 10000 --max_true_evals 1100 --pop_size 8 --function_id 18
+python .\examples\run_coco_experiment_pfn_sur.py --experiment_name pfn_sur_ts_100_ps_8 --dimension 5 --instances_start 1 --instances_end 15 --seed 42 --max_generations 10000 --max_true_evals 1100 --pop_size 8 --function_id 17
+python .\examples\run_coco_experiment_pfn_sur.py --experiment_name pfn_sur_ts_100_ps_8 --dimension 5 --instances_start 1 --instances_end 15 --seed 42 --max_generations 10000 --max_true_evals 1100 --pop_size 8 --function_id 16
+python .\examples\run_coco_experiment_pfn_sur.py --experiment_name pfn_sur_ts_100_ps_8 --dimension 5 --instances_start 1 --instances_end 15 --seed 42 --max_generations 10000 --max_true_evals 1100 --pop_size 8 --function_id 15

@@ -116,7 +116,7 @@ class TopFractionPlusUncertaintyControl(EvolutionControl):
         self,
         top_fraction: float = 0.3,
         uncertainty_fraction: float = 0.2,
-        regime = "static", # static / adaptive
+        regime = "static", # static / adaptive / manual
     ) -> None:
         if not (0.0 < top_fraction <= 1.0):
             raise ValueError("top_fraction must satisfy 0 < top_fraction <= 1")
