@@ -20,6 +20,7 @@ from pfn_cmaes.decision.pfn_model import (
     PFNDecisionModel,
     PFNStateFeaturizer,
 )
+from pfn_cmaes.interfaces import DecisionModel
 from pfn_cmaes.optimizers.cmaes import PyCMAOptimizerBackend
 from pfn_cmaes.stubs.decision_models import (
     PFNBackboneConfig,
@@ -43,7 +44,7 @@ from pfn_cmaes.training.decision_model_trainer import (
     DecisionTrainingConfig,
     train_decision_model,
 )
-from pfn_cmaes.types import GenerationState
+from pfn_cmaes.types import GenerationState, SurrogateDecision
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pop_size", type=int, default=10)
     parser.add_argument("--generate_dataset", action="store_true")
     parser.add_argument("--train_decision_model", action="store_true")
+    parser.add_argument(
+        "--fixed_surrogate",
+        type=str,
+        default=None,
+        help="Bypass PFN and always choose this surrogate bundle in decision mode.",
+    )
     parser.add_argument("--output_dir", type=Path, default=Path("results"))
 
     parser.add_argument("--train_epochs", type=int, default=25)
@@ -73,6 +80,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cpu")
 
     return parser.parse_args()
+
+
+class FixedSurrogateDecisionModel(DecisionModel):
+    def __init__(self, surrogate_name: str):
+        self.surrogate_name = surrogate_name
+
+    def score(self, state: GenerationState, surrogate_names: list[str]) -> SurrogateDecision:
+        if self.surrogate_name not in surrogate_names:
+            raise ValueError(
+                f"Unknown fixed surrogate {self.surrogate_name!r}. Available surrogate bundles: {surrogate_names!r}"
+            )
+
+        return SurrogateDecision(
+            goodness={name: 1.0 if name == self.surrogate_name else 0.0 for name in surrogate_names},
+            chosen_surrogate_name=self.surrogate_name,
+            metadata={
+                "model_type": "fixed_surrogate_decision_model",
+                "fixed_surrogate": self.surrogate_name,
+            },
+        )
 
 
 def build_surrogate_specs() -> list[SurrogateSpec]:
@@ -349,7 +376,16 @@ def build_or_load_decision_model(
     *,
     args: argparse.Namespace,
     surrogate_names: Sequence[str],
-) -> PFNDecisionModel:
+) -> DecisionModel:
+    if args.fixed_surrogate is not None:
+        if args.fixed_surrogate not in surrogate_names:
+            raise ValueError(
+                f"Unknown --fixed_surrogate {args.fixed_surrogate!r}. "
+                f"Available surrogate bundles: {list(surrogate_names)!r}"
+            )
+        print(f"[decision_model] using fixed surrogate: {args.fixed_surrogate}")
+        return FixedSurrogateDecisionModel(args.fixed_surrogate)
+
     checkpoint_path = build_checkpoint_path(
         output_dir=args.output_dir,
         experiment_name=args.experiment_name,
