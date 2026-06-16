@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
@@ -100,6 +100,91 @@ def _build_multilabel_targets(
     return labels.astype(np.float32)
 
 
+def _score_vector(
+    surrogate_scores: dict[str, float],
+    surrogate_names: Sequence[str],
+) -> np.ndarray:
+    return np.asarray(
+        [_safe_float(surrogate_scores[name]) for name in surrogate_names],
+        dtype=np.float32,
+    )
+
+
+def _normalize_scores_for_soft_targets(
+    scores: np.ndarray,
+    *,
+    transform: str,
+) -> np.ndarray:
+    scores = np.asarray(scores, dtype=np.float32)
+    if transform == "identity":
+        values = scores.copy()
+    elif transform == "log1p":
+        values = np.log1p(np.maximum(scores, 0.0)).astype(np.float32)
+    elif transform == "rank":
+        order = np.argsort(np.argsort(scores))
+        if len(scores) <= 1:
+            return np.zeros_like(scores, dtype=np.float32)
+        return (order / float(len(scores) - 1)).astype(np.float32)
+    elif transform == "minmax":
+        values = scores.copy()
+    elif transform == "log1p_minmax":
+        values = np.log1p(np.maximum(scores, 0.0)).astype(np.float32)
+    else:
+        raise ValueError(f"Unknown score transform: {transform}")
+
+    if transform.endswith("minmax"):
+        worst = float(np.min(values))
+        best = float(np.max(values))
+        spread = best - worst
+        if spread <= 1e-12:
+            return np.zeros_like(values, dtype=np.float32)
+        values = (values - worst) / spread
+
+    return values.astype(np.float32)
+
+
+def _build_softmax_targets(
+    surrogate_scores: dict[str, float],
+    surrogate_names: Sequence[str],
+    *,
+    temperature: float,
+    transform: str,
+) -> np.ndarray:
+    scores = _score_vector(surrogate_scores, surrogate_names)
+    values = _normalize_scores_for_soft_targets(scores, transform=transform)
+    temp = max(float(temperature), 1e-8)
+    logits = values / temp
+    logits = logits - float(np.max(logits))
+    probs = np.exp(logits).astype(np.float32)
+    total = float(np.sum(probs))
+    if total <= 1e-12:
+        return np.full_like(probs, fill_value=1.0 / max(len(probs), 1), dtype=np.float32)
+    return (probs / total).astype(np.float32)
+
+
+def _build_training_targets(
+    surrogate_scores: dict[str, float],
+    surrogate_names: Sequence[str],
+    *,
+    training_config: "DecisionTrainingConfig",
+) -> np.ndarray:
+    if training_config.target_mode == "multilabel_bce":
+        return _build_multilabel_targets(
+            surrogate_scores=surrogate_scores,
+            surrogate_names=surrogate_names,
+            comparable_margin=training_config.comparable_margin,
+            min_positive=training_config.min_positive_labels,
+        )
+    if training_config.target_mode == "softmax_kl":
+        return _build_softmax_targets(
+            surrogate_scores=surrogate_scores,
+            surrogate_names=surrogate_names,
+            temperature=training_config.soft_label_temperature,
+            transform=training_config.score_transform,
+        )
+    raise ValueError(f"Unsupported target_mode: {training_config.target_mode}")
+
+
 @dataclass(slots=True)
 class DecisionTrainingConfig:
     batch_size: int = 32
@@ -117,6 +202,14 @@ class DecisionTrainingConfig:
     comparable_margin: float = 0.10
     min_positive_labels: int = 1
     positive_class_weight: float = 1.0
+    target_mode: str = "multilabel_bce"
+    soft_label_temperature: float = 0.20
+    score_transform: str = "log1p_minmax"
+    class_weighting: str = "none"
+    class_weight_power: float = 0.5
+    class_weight_clip: float = 10.0
+    entropy_bonus: float = 0.0
+    use_action_features: bool = False
     print_class_stats: bool = True
 
 
@@ -146,11 +239,10 @@ def _record_to_training_sample(
         surrogate_names=list(surrogate_names),
     )
 
-    target_labels = _build_multilabel_targets(
+    target_labels = _build_training_targets(
         surrogate_scores=record["surrogate_scores"],
         surrogate_names=surrogate_names,
-        comparable_margin=training_config.comparable_margin,
-        min_positive=training_config.min_positive_labels,
+        training_config=training_config,
     )
 
     return context_x, context_y, candidate_x, action_ids, target_labels
@@ -190,8 +282,7 @@ def _iter_valid_training_records(
 
                 if max_records is not None and yielded >= max_records:
                     print(
-                        f"[train_decision_model] streamed {yielded} valid records "
-                        f"(skipped_invalid={skipped_invalid})"
+                        f"[train_decision_model] streamed {yielded} valid records (skipped_invalid={skipped_invalid})"
                     )
                     return
 
@@ -446,14 +537,21 @@ def _print_target_statistics(
         print(f"  - {name}: {positive_counts[name]}")
 
 
-def _print_streaming_target_statistics(
+@dataclass(slots=True)
+class TargetStatistics:
+    total: int
+    oracle_counts: dict[str, int]
+    positive_counts: dict[str, int]
+
+
+def _collect_streaming_target_statistics(
     *,
     experiment_root: Path,
     target_dimension: int,
     held_out_function_id: int,
     surrogate_names: Sequence[str],
     training_config: DecisionTrainingConfig,
-) -> None:
+) -> TargetStatistics:
     positive_counts = {name: 0 for name in surrogate_names}
     oracle_counts = {name: 0 for name in surrogate_names}
     total = 0
@@ -481,14 +579,73 @@ def _print_streaming_target_statistics(
 
         total += 1
 
-    print(f"[train_decision_model] target statistics from {total} streamed records:")
+    return TargetStatistics(
+        total=total,
+        oracle_counts=oracle_counts,
+        positive_counts=positive_counts,
+    )
+
+
+def _print_target_statistics_from_counts(
+    stats: TargetStatistics,
+    surrogate_names: Sequence[str],
+) -> None:
+    print(f"[train_decision_model] target statistics from {stats.total} streamed records:")
     print("[train_decision_model] oracle best counts:")
     for name in surrogate_names:
-        print(f"  - {name}: {oracle_counts[name]}")
+        print(f"  - {name}: {stats.oracle_counts[name]}")
 
     print("[train_decision_model] multi-label positive counts:")
     for name in surrogate_names:
-        print(f"  - {name}: {positive_counts[name]}")
+        print(f"  - {name}: {stats.positive_counts[name]}")
+
+
+def _compute_class_weight_vector(
+    *,
+    stats: TargetStatistics | None,
+    surrogate_names: Sequence[str],
+    training_config: DecisionTrainingConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    mode = training_config.class_weighting
+    if mode == "none" or stats is None:
+        return torch.ones((len(surrogate_names),), dtype=torch.float32, device=device)
+
+    if mode == "inverse_oracle":
+        counts = np.asarray([max(stats.oracle_counts[name], 1) for name in surrogate_names], dtype=np.float64)
+    elif mode == "inverse_positive":
+        counts = np.asarray([max(stats.positive_counts[name], 1) for name in surrogate_names], dtype=np.float64)
+    else:
+        raise ValueError(f"Unsupported class_weighting: {mode}")
+
+    mean_count = float(np.mean(counts))
+    weights = np.power(mean_count / counts, float(training_config.class_weight_power))
+    clip = float(training_config.class_weight_clip)
+    if clip > 0:
+        weights = np.clip(weights, 1.0 / clip, clip)
+    weights = weights / max(float(np.mean(weights)), 1e-12)
+    return torch.as_tensor(weights, dtype=torch.float32, device=device)
+
+
+def _softmax_kl_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    class_weights: torch.Tensor,
+    entropy_bonus: float,
+) -> torch.Tensor:
+    log_probs = torch.log_softmax(logits, dim=-1)
+    weighted_targets = targets * class_weights[None, :]
+    denom = weighted_targets.sum(dim=-1).clamp_min(1e-12)
+    loss_per_sample = -(weighted_targets * log_probs).sum(dim=-1) / denom
+    loss = loss_per_sample.mean()
+
+    if entropy_bonus > 0.0:
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * log_probs).sum(dim=-1).mean()
+        loss = loss - float(entropy_bonus) * entropy
+
+    return loss
 
 
 def _first_valid_training_record(
@@ -529,14 +686,17 @@ def train_decision_model(
         surrogate_names=surrogate_names,
     )
 
-    if training_config.print_class_stats:
-        _print_streaming_target_statistics(
+    target_stats: TargetStatistics | None = None
+    if training_config.print_class_stats or training_config.class_weighting != "none":
+        target_stats = _collect_streaming_target_statistics(
             experiment_root=experiment_root,
             target_dimension=target_dimension,
             held_out_function_id=held_out_function_id,
             surrogate_names=surrogate_names,
             training_config=training_config,
         )
+        if training_config.print_class_stats:
+            _print_target_statistics_from_counts(target_stats, surrogate_names)
 
     context_dim, candidate_dim = infer_model_dims_from_records(
         records=[first_record],
@@ -559,6 +719,7 @@ def train_decision_model(
             activation="gelu",
             use_type_embeddings=True,
             max_action_tokens=max(64, len(surrogate_names)),
+            use_action_features=training_config.use_action_features,
         ),
     ).to(device)
 
@@ -568,13 +729,32 @@ def train_decision_model(
         weight_decay=training_config.weight_decay,
     )
 
-    pos_weight = torch.full(
-        (len(surrogate_names),),
-        fill_value=float(training_config.positive_class_weight),
-        dtype=torch.float32,
+    class_weights = _compute_class_weight_vector(
+        stats=target_stats,
+        surrogate_names=surrogate_names,
+        training_config=training_config,
         device=device,
     )
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    if training_config.class_weighting != "none":
+        print("[train_decision_model] class weights:")
+        for name, weight in zip(surrogate_names, class_weights.detach().cpu().numpy().tolist(), strict=True):
+            print(f"  - {name}: {weight:.4f}")
+
+    if training_config.target_mode == "multilabel_bce":
+        if training_config.class_weighting in {"inverse_oracle", "inverse_positive"}:
+            pos_weight = class_weights * float(training_config.positive_class_weight)
+        else:
+            pos_weight = torch.full(
+                (len(surrogate_names),),
+                fill_value=float(training_config.positive_class_weight),
+                dtype=torch.float32,
+                device=device,
+            )
+        criterion: nn.Module | None = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    elif training_config.target_mode == "softmax_kl":
+        criterion = None
+    else:
+        raise ValueError(f"Unsupported target_mode: {training_config.target_mode}")
 
     backbone.train()
     for epoch in range(training_config.epochs):
@@ -622,7 +802,16 @@ def train_decision_model(
                 candidate_mask=candidate_mask,
             )
 
-            loss = criterion(logits, targets)
+            if training_config.target_mode == "softmax_kl":
+                loss = _softmax_kl_loss(
+                    logits,
+                    targets,
+                    class_weights=class_weights,
+                    entropy_bonus=training_config.entropy_bonus,
+                )
+            else:
+                assert criterion is not None
+                loss = criterion(logits, targets)
 
             optimizer.zero_grad()
             loss.backward()
@@ -661,22 +850,19 @@ def train_decision_model(
             "surrogate_names": list(surrogate_names),
             "dimension": target_dimension,
             "held_out_function_id": held_out_function_id,
-            "training_mode": "multilabel_bce",
+            "training_mode": training_config.target_mode,
             "target_construction": {
                 "comparable_margin": training_config.comparable_margin,
                 "min_positive_labels": training_config.min_positive_labels,
+                "soft_label_temperature": training_config.soft_label_temperature,
+                "score_transform": training_config.score_transform,
+                "class_weighting": training_config.class_weighting,
+                "class_weight_power": training_config.class_weight_power,
+                "class_weight_clip": training_config.class_weight_clip,
+                "entropy_bonus": training_config.entropy_bonus,
+                "use_action_features": training_config.use_action_features,
             },
-            "pfn_config": {
-                "device": pfn_config.device,
-                "dtype": pfn_config.dtype,
-                "max_history": pfn_config.max_history,
-                "normalize_targets": pfn_config.normalize_targets,
-                "include_ranks": pfn_config.include_ranks,
-                "include_recency": pfn_config.include_recency,
-                "include_optimizer_features_in_context": pfn_config.include_optimizer_features_in_context,
-                "temperature": pfn_config.temperature,
-                "tie_margin": pfn_config.tie_margin,
-            },
+            "pfn_config": asdict(pfn_config),
             "backbone_type": "set_conditioned_pfn",
             "backbone_config": {
                 "hidden_dim": backbone.config.hidden_dim,
@@ -689,6 +875,7 @@ def train_decision_model(
                 "activation": backbone.config.activation,
                 "use_type_embeddings": backbone.config.use_type_embeddings,
                 "max_action_tokens": backbone.config.max_action_tokens,
+                "use_action_features": backbone.config.use_action_features,
             },
         },
         checkpoint_path,

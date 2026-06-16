@@ -6,10 +6,12 @@
 
 set -u
 
-PROJECT_HOME="/storage/brno2/home/furdav/CMA-ES"
-TRAIN_EXPERIMENT="full_run"
-OUT_NAME="oracle_agreement"
-SIF="$PROJECT_HOME/pytorch_env.sif"
+PROJECT_HOME="${PROJECT_HOME:-/storage/brno2/home/furdav/CMA-ES}"
+TRAIN_EXPERIMENT="${TRAIN_EXPERIMENT:-full_run}"
+DATA_EXPERIMENT="${DATA_EXPERIMENT:-$TRAIN_EXPERIMENT}"
+OUT_NAME="${OUT_NAME:-oracle_agreement}"
+SIF="${SIF:-$PROJECT_HOME/pytorch_env.sif}"
+DIMENSION="${DIMENSION:-5}"
 
 cd "$SCRATCHDIR"
 
@@ -36,17 +38,17 @@ cp "$PROJECT_HOME/README.md" . 2>/dev/null || true
 mkdir -p "results"
 mkdir -p "results/$TRAIN_EXPERIMENT"
 cp -r "$PROJECT_HOME/results/$TRAIN_EXPERIMENT/models" "results/$TRAIN_EXPERIMENT/models"
-cp -r "$PROJECT_HOME/results/$TRAIN_EXPERIMENT"/f${PBS_ARRAY_INDEX}_i*_d5_s42 "results/$TRAIN_EXPERIMENT/"
+cp -r "$PROJECT_HOME/results/$DATA_EXPERIMENT"/f${PBS_ARRAY_INDEX}_i*_d${DIMENSION}_s42 "results/$TRAIN_EXPERIMENT/"
 
 # Create venv. Use --no-deps to avoid downloading/reinstalling CUDA Torch wheels.
 singularity exec "$SIF" python -m venv --system-site-packages venv_oracle_eval
 singularity exec "$SIF" venv_oracle_eval/bin/pip install --no-cache-dir --no-deps -e .
 
-singularity exec "$SIF" venv_oracle_eval/bin/python scripts/evaluate_pfn_oracle_agreement.py \
+singularity exec "$SIF" venv_oracle_eval/bin/python scripts/local/oracle-based/evaluate_pfn_oracle_agreement.py \
   --experiment-root "results/$TRAIN_EXPERIMENT" \
   --models-dir "results/$TRAIN_EXPERIMENT/models" \
   --out-dir "results/$TRAIN_EXPERIMENT/$OUT_NAME" \
-  --dimension 5 \
+  --dimension "$DIMENSION" \
   --device cpu \
   --function-id "$PBS_ARRAY_INDEX" \
   --generation-bin-width 50 \

@@ -7,6 +7,7 @@ os.environ["DISABLE_POSTHOG_ANALYTICS"] = "1"
 os.environ["ANALYTICS_DISABLED"] = "1"
 
 import argparse
+from dataclasses import fields
 from pathlib import Path
 from typing import Sequence
 
@@ -33,26 +34,14 @@ from pfn_cmaes.stubs.decision_models import (
     UniformDecisionModel,
 )
 from pfn_cmaes.stubs.evolution_controls import (
-    AdaptiveModelLifelengthControl,
-    DoublyTrainedControl,
-    EvaluateAll,
-    EvaluateTopFraction,
     TopFractionPlusUncertaintyControl,
 )
-from pfn_cmaes.stubs.surrogates import (
-    GaussianProcessMaternSurrogate,
-    LocalLinearSurrogate,
-    LocalQuadraticSurrogate,
-    RandomForestSurrogate,
-    RankSVMSurrogate,
-)
+from pfn_cmaes.surrogates.tabpfn_surrogate import TabPFNSurrogate
 from pfn_cmaes.training.decision_model_trainer import (
     DecisionTrainingConfig,
     train_decision_model,
 )
 from pfn_cmaes.types import GenerationState
-
-from pfn_cmaes.surrogates.tabpfn_surrogate import TabPFNSurrogate
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--generate_dataset", action="store_true")
     parser.add_argument("--train_decision_model", action="store_true")
     parser.add_argument("--output_dir", type=Path, default=Path("results"))
-    
+
     parser.add_argument("--train_epochs", type=int, default=25)
     parser.add_argument("--train_batch_size", type=int, default=32)
     parser.add_argument("--train_lr", type=float, default=1e-3)
@@ -97,7 +86,7 @@ def build_surrogate_specs(args) -> list[SurrogateSpec]:
         SurrogateSpec(
             name="tabpfn",
             surrogate_cls=TabPFNSurrogate,
-            evolution_control_cls=TopFractionPlusUncertaintyControl,#EvaluateTopFraction,
+            evolution_control_cls=TopFractionPlusUncertaintyControl,  # EvaluateTopFraction,
             surrogate_kwargs={
                 "min_train_size": 5,
                 "max_train_size": args.max_train_size,
@@ -106,11 +95,11 @@ def build_surrogate_specs(args) -> list[SurrogateSpec]:
                 "recent_fraction": args.recent_fraction,
                 "device": "cuda",
                 "n_estimators": 8,
-                "return_uncertainty": False,#True,
+                "return_uncertainty": False,  # True,
                 "raise_on_error": True,
             },
             evolution_control_kwargs={
-                #"fraction": 0.5,
+                # "fraction": 0.5,
                 "top_fraction": args.top_fraction,
                 "uncertainty_fraction": args.uncertainty_fraction,
                 "regime": args.evolution_control_regime,
@@ -232,7 +221,7 @@ def build_trained_pfn_decision_model(
 
     backbone = SetConditionedPFNBackbone(
         context_dim=int(checkpoint["context_dim"]),
-        candidate_dim=int(checkpoint["candidate_dim"]),
+        candidate_dim=int(checkpoint.get("candidate_dim", checkpoint.get("query_dim"))),
         config=PFNBackboneConfig(**cfg),
     )
 
@@ -245,19 +234,11 @@ def build_trained_pfn_decision_model(
     backbone.load_state_dict(checkpoint["model_state_dict"])
     backbone.eval()
 
-    pfn_config_dict = checkpoint.get("pfn_config", {})
-    pfn_config = PFNDecisionConfig(
-        checkpoint_path=str(checkpoint_path),
-        device=device,
-        dtype=str(pfn_config_dict.get("dtype", "float32")),
-        max_history=int(pfn_config_dict.get("max_history", 128)),
-        normalize_targets=bool(pfn_config_dict.get("normalize_targets", True)),
-        include_ranks=bool(pfn_config_dict.get("include_ranks", True)),
-        include_recency=bool(pfn_config_dict.get("include_recency", True)),
-        include_optimizer_features_in_context=bool(pfn_config_dict.get("include_optimizer_features_in_context", True)),
-        temperature=float(pfn_config_dict.get("temperature", 1.0)),
-        tie_margin=float(pfn_config_dict.get("tie_margin", 1e-3)),
-    )
+    pfn_config_dict = dict(checkpoint.get("pfn_config", {}))
+    valid_pfn_keys = {field.name for field in fields(PFNDecisionConfig)}
+    pfn_kwargs = {key: value for key, value in pfn_config_dict.items() if key in valid_pfn_keys}
+    pfn_kwargs.update({"checkpoint_path": str(checkpoint_path), "device": device})
+    pfn_config = PFNDecisionConfig(**pfn_kwargs)
 
     return PFNDecisionModel(backbone=backbone, config=pfn_config)
 
@@ -294,13 +275,13 @@ def build_or_load_decision_model(
 
 def build_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
     surrogate_specs = build_surrogate_specs(args)
-    surrogate_names = [spec.name for spec in surrogate_specs]
+    # surrogate_names = [spec.name for spec in surrogate_specs]
 
     decision_model = UniformDecisionModel()
-    #decision_model = build_or_load_decision_model(
+    # decision_model = build_or_load_decision_model(
     #    args=args,
     #    surrogate_names=surrogate_names,
-    #)
+    # )
 
     run_cfg = RunConfig(
         experiment_name=args.experiment_name,

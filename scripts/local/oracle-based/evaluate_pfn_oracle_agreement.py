@@ -6,6 +6,7 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -65,19 +66,11 @@ def load_model(checkpoint: Path, device: str) -> PFNDecisionModel:
         raise RuntimeError("PyTorch is required to evaluate PFN checkpoints.") from exc
 
     meta = torch.load(checkpoint, map_location=device, weights_only=True)
-    pfn_config_dict = meta.get("pfn_config", {})
-    pfn_config = PFNDecisionConfig(
-        checkpoint_path=str(checkpoint),
-        device=device,
-        dtype=str(pfn_config_dict.get("dtype", "float32")),
-        max_history=int(pfn_config_dict.get("max_history", 128)),
-        normalize_targets=bool(pfn_config_dict.get("normalize_targets", True)),
-        include_ranks=bool(pfn_config_dict.get("include_ranks", True)),
-        include_recency=bool(pfn_config_dict.get("include_recency", True)),
-        include_optimizer_features_in_context=bool(pfn_config_dict.get("include_optimizer_features_in_context", True)),
-        temperature=float(pfn_config_dict.get("temperature", 1.0)),
-        tie_margin=float(pfn_config_dict.get("tie_margin", 1e-3)),
-    )
+    pfn_config_dict = dict(meta.get("pfn_config", {}))
+    valid_pfn_keys = {field.name for field in fields(PFNDecisionConfig)}
+    pfn_kwargs = {key: value for key, value in pfn_config_dict.items() if key in valid_pfn_keys}
+    pfn_kwargs.update({"checkpoint_path": str(checkpoint), "device": device})
+    pfn_config = PFNDecisionConfig(**pfn_kwargs)
     return PFNDecisionModel(config=pfn_config)
 
 

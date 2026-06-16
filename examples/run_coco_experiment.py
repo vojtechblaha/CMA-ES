@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import fields
 from pathlib import Path
 from typing import Sequence
 
@@ -77,6 +78,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_max_records", type=int, default=0)
     parser.add_argument("--train_shuffle_buffer", type=int, default=4096)
     parser.add_argument("--train_steps_per_epoch", type=int, default=0)
+    parser.add_argument("--train_target_mode", choices=["multilabel_bce", "softmax_kl"], default="multilabel_bce")
+    parser.add_argument("--train_soft_label_temperature", type=float, default=0.20)
+    parser.add_argument(
+        "--train_score_transform",
+        choices=["identity", "log1p", "minmax", "log1p_minmax", "rank"],
+        default="log1p_minmax",
+    )
+    parser.add_argument(
+        "--train_class_weighting",
+        choices=["none", "inverse_oracle", "inverse_positive"],
+        default="none",
+    )
+    parser.add_argument("--train_class_weight_power", type=float, default=0.5)
+    parser.add_argument("--train_class_weight_clip", type=float, default=10.0)
+    parser.add_argument("--train_entropy_bonus", type=float, default=0.0)
+    parser.add_argument(
+        "--pfn_v2_features",
+        action="store_true",
+        help="Enable budget, history-trend, candidate-distribution and action-descriptor PFN features.",
+    )
+    parser.add_argument("--train_max_true_evals", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
 
     return parser.parse_args()
@@ -342,7 +364,7 @@ def build_trained_pfn_decision_model(
 
     backbone = SetConditionedPFNBackbone(
         context_dim=int(checkpoint["context_dim"]),
-        candidate_dim=int(checkpoint["candidate_dim"]),
+        candidate_dim=int(checkpoint.get("candidate_dim", checkpoint.get("query_dim"))),
         config=PFNBackboneConfig(**cfg),
     )
 
@@ -355,19 +377,11 @@ def build_trained_pfn_decision_model(
     backbone.load_state_dict(checkpoint["model_state_dict"])
     backbone.eval()
 
-    pfn_config_dict = checkpoint.get("pfn_config", {})
-    pfn_config = PFNDecisionConfig(
-        checkpoint_path=str(checkpoint_path),
-        device=device,
-        dtype=str(pfn_config_dict.get("dtype", "float32")),
-        max_history=int(pfn_config_dict.get("max_history", 128)),
-        normalize_targets=bool(pfn_config_dict.get("normalize_targets", True)),
-        include_ranks=bool(pfn_config_dict.get("include_ranks", True)),
-        include_recency=bool(pfn_config_dict.get("include_recency", True)),
-        include_optimizer_features_in_context=bool(pfn_config_dict.get("include_optimizer_features_in_context", True)),
-        temperature=float(pfn_config_dict.get("temperature", 1.0)),
-        tie_margin=float(pfn_config_dict.get("tie_margin", 1e-3)),
-    )
+    pfn_config_dict = dict(checkpoint.get("pfn_config", {}))
+    valid_pfn_keys = {field.name for field in fields(PFNDecisionConfig)}
+    pfn_kwargs = {key: value for key, value in pfn_config_dict.items() if key in valid_pfn_keys}
+    pfn_kwargs.update({"checkpoint_path": str(checkpoint_path), "device": device})
+    pfn_config = PFNDecisionConfig(**pfn_kwargs)
 
     return PFNDecisionModel(backbone=backbone, config=pfn_config)
 
@@ -463,6 +477,10 @@ def maybe_train_decision_model(args: argparse.Namespace) -> None:
         include_ranks=True,
         include_recency=True,
         include_optimizer_features_in_context=True,
+        include_budget_features=bool(args.pfn_v2_features),
+        include_history_trend_features=bool(args.pfn_v2_features),
+        include_candidate_distribution_features=bool(args.pfn_v2_features),
+        max_true_evals=int(args.train_max_true_evals or args.max_true_evals),
         temperature=1.0,
         tie_margin=1e-3,
     )
@@ -478,6 +496,14 @@ def maybe_train_decision_model(args: argparse.Namespace) -> None:
         shuffle_buffer_size=args.train_shuffle_buffer,
         steps_per_epoch=None if args.train_steps_per_epoch <= 0 else args.train_steps_per_epoch,
         seed=args.seed,
+        target_mode=args.train_target_mode,
+        soft_label_temperature=args.train_soft_label_temperature,
+        score_transform=args.train_score_transform,
+        class_weighting=args.train_class_weighting,
+        class_weight_power=args.train_class_weight_power,
+        class_weight_clip=args.train_class_weight_clip,
+        entropy_bonus=args.train_entropy_bonus,
+        use_action_features=bool(args.pfn_v2_features),
     )
 
     train_decision_model(

@@ -37,12 +37,39 @@ class PFNBackboneConfig:
     num_heads: int = 8
     num_context_layers: int = 4
     num_candidate_layers: int = 2
+    num_query_layers: int | None = None
     num_action_layers: int = 2
     ff_multiplier: int = 4
     dropout: float = 0.1
     activation: str = "gelu"
     use_type_embeddings: bool = True
     max_action_tokens: int = 64
+    use_action_features: bool = False
+
+    def __post_init__(self) -> None:
+        if self.num_query_layers is not None:
+            self.num_candidate_layers = int(self.num_query_layers)
+
+
+ACTION_FEATURE_DIM = 13
+
+
+def _action_feature_table(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    # Order follows build_surrogate_specs(): lq_linear, lq_quadratic, gp_dts,
+    # gp_unc, rf_lifelength, svm_rank, real_only. Remaining action ids receive
+    # zeros so old/custom portfolios still work through the learned embedding.
+    rows = [
+        # local, gp, rf, svm, real, linear, quadratic, uncertainty, rank,
+        # nominal_true_fraction, top_fraction, lifelength, dts
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0.5, 0.5, 0, 0],
+        [1, 0, 0, 0, 0, 0, 1, 0, 0, 0.3, 0.3, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.3, 0, 1],
+        [0, 1, 0, 0, 0, 0, 0, 1, 0, 0.5, 0.3, 0, 0],
+        [0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.5, 1, 0],
+        [0, 0, 0, 1, 0, 0, 0, 0, 1, 0.5, 0.5, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0, 0, 1.0, 1.0, 0, 0],
+    ]
+    return torch.as_tensor(rows, device=device, dtype=dtype)
 
 
 def _make_activation(name: str) -> nn.Module:
@@ -266,6 +293,16 @@ class SetConditionedPFNBackbone(nn.Module):
         )
 
         self.action_embedding = nn.Embedding(self.config.max_action_tokens, h)
+        if self.config.use_action_features:
+            self.action_feature_encoder = MLPBlock(
+                in_dim=ACTION_FEATURE_DIM,
+                out_dim=h,
+                hidden_dim=h,
+                dropout=dropout,
+                activation=act,
+            )
+        else:
+            self.action_feature_encoder = None
 
         if self.config.use_type_embeddings:
             self.context_type_embedding = nn.Parameter(torch.zeros(1, 1, h))
@@ -404,6 +441,8 @@ class SetConditionedPFNBackbone(nn.Module):
         context_tokens = self.context_encoder(context_input)
         candidate_tokens = self.candidate_encoder(candidate_x)
         action_tokens = self.action_embedding(action_ids)
+        if self.action_feature_encoder is not None:
+            action_tokens = action_tokens + self.action_feature_encoder(self._builtin_action_features(action_ids))
 
         if self.context_type_embedding is not None:
             context_tokens = context_tokens + self.context_type_embedding
@@ -455,3 +494,31 @@ class SetConditionedPFNBackbone(nn.Module):
         if logits.shape != (batch_size, num_actions):
             raise RuntimeError(f"Expected output shape {(batch_size, num_actions)}, got {tuple(logits.shape)}")
         return logits
+
+    def _builtin_action_features(self, action_ids: torch.Tensor) -> torch.Tensor:
+        table = _action_feature_table(device=action_ids.device, dtype=self.action_embedding.weight.dtype)
+        features = torch.zeros(
+            (*action_ids.shape, ACTION_FEATURE_DIM),
+            device=action_ids.device,
+            dtype=self.action_embedding.weight.dtype,
+        )
+        known = (action_ids >= 0) & (action_ids < table.shape[0])
+        if torch.any(known):
+            features[known] = table[action_ids[known]]
+        return features
+
+
+class RegularPFNBackbone(SetConditionedPFNBackbone):
+    """Backward-compatible name for older experiments that used query tokens."""
+
+    def __init__(
+        self,
+        context_dim: int,
+        query_dim: int,
+        config: PFNBackboneConfig | None = None,
+    ) -> None:
+        super().__init__(
+            context_dim=context_dim,
+            candidate_dim=query_dim,
+            config=config,
+        )

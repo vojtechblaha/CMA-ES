@@ -26,6 +26,10 @@ class PFNDecisionConfig:
     include_ranks: bool = True
     include_recency: bool = True
     include_optimizer_features_in_context: bool = True
+    include_budget_features: bool = False
+    include_history_trend_features: bool = False
+    include_candidate_distribution_features: bool = False
+    max_true_evals: int | None = None
     tie_margin: float = 1e-3
     temperature: float = 1.0
 
@@ -137,18 +141,168 @@ class PFNStateFeaturizer:
         else:
             inferred_dim = 0
 
-        feats = np.asarray(
-            [
-                float(state.generation_index),
-                float(optimizer_state.get("dimension", metadata.get("dimension", inferred_dim))),
-                float(optimizer_state.get("population_size", metadata.get("population_size", len(cand_x)))),
-                float(state.incumbent_y) if np.isfinite(float(state.incumbent_y)) else 0.0,
-                float(optimizer_state.get("sigma", metadata.get("sigma", 0.0))),
-                float(optimizer_state.get("num_true_evals", len(np.asarray(state.evaluated_history_y).reshape(-1)))),
-            ],
-            dtype=np.float32,
+        history_y = np.asarray(state.evaluated_history_y, dtype=np.float32).reshape(-1)
+        history_y = self._sanitize_array(history_y)
+
+        population_size = float(optimizer_state.get("population_size", metadata.get("population_size", len(cand_x))))
+        sigma = float(optimizer_state.get("sigma", metadata.get("sigma", 0.0)))
+
+        # Preserve the legacy feature value unless v2 budget features are explicitly enabled.
+        legacy_true_evals = float(optimizer_state.get("num_true_evals", len(history_y)))
+        evals_used = float(
+            optimizer_state.get(
+                "evaluations",
+                optimizer_state.get("num_true_evals", metadata.get("evaluations", len(history_y))),
+            )
         )
-        return self._sanitize_array(feats)
+
+        feats: list[float] = [
+            float(state.generation_index),
+            float(optimizer_state.get("dimension", metadata.get("dimension", inferred_dim))),
+            population_size,
+            float(state.incumbent_y) if np.isfinite(float(state.incumbent_y)) else 0.0,
+            sigma,
+            legacy_true_evals,
+        ]
+
+        if self.config.include_budget_features:
+            feats.extend(
+                self._budget_features(
+                    generation_index=int(state.generation_index),
+                    evals_used=evals_used,
+                    population_size=population_size,
+                    history_size=float(len(history_y)),
+                )
+            )
+
+        if self.config.include_history_trend_features:
+            feats.extend(
+                self._history_trend_features(
+                    history_y=history_y,
+                    incumbent_y=float(state.incumbent_y),
+                    evals_used=evals_used,
+                )
+            )
+
+        if self.config.include_candidate_distribution_features:
+            feats.extend(
+                self._candidate_distribution_features(
+                    candidate_x=cand_x,
+                    incumbent_x=np.asarray(state.incumbent_x, dtype=np.float32),
+                )
+            )
+
+        return self._sanitize_array(np.asarray(feats, dtype=np.float32))
+
+    def _budget_features(
+        self,
+        *,
+        generation_index: int,
+        evals_used: float,
+        population_size: float,
+        history_size: float,
+    ) -> list[float]:
+        budget = float(self.config.max_true_evals or 0)
+        if budget <= 0:
+            budget = max(evals_used, history_size, population_size, 1.0)
+
+        remaining = max(budget - evals_used, 0.0)
+        generations_budget = max(budget / max(population_size, 1.0), 1.0)
+
+        return [
+            evals_used,
+            budget,
+            remaining,
+            evals_used / max(budget, 1.0),
+            remaining / max(budget, 1.0),
+            float(generation_index) / generations_budget,
+            np.log1p(max(evals_used, 0.0)) / max(np.log1p(budget), 1e-12),
+            history_size / max(budget, 1.0),
+        ]
+
+    @staticmethod
+    def _safe_relative_improvement(previous_best: float, current_best: float) -> float:
+        if not np.isfinite(previous_best) or not np.isfinite(current_best):
+            return 0.0
+        return max(previous_best - current_best, 0.0) / (abs(previous_best) + 1.0)
+
+    def _history_trend_features(
+        self,
+        *,
+        history_y: np.ndarray,
+        incumbent_y: float,
+        evals_used: float,
+    ) -> list[float]:
+        y = self._sanitize_array(history_y).reshape(-1)
+        if len(y) == 0:
+            return [0.0] * 12
+
+        current_best = float(np.min(y))
+        mean_y = float(np.mean(y))
+        std_y = float(np.std(y))
+        finite_incumbent = float(incumbent_y) if np.isfinite(float(incumbent_y)) else current_best
+
+        def window_improvement(window: int) -> tuple[float, float, float]:
+            if len(y) <= window:
+                return 0.0, 0.0, 0.0
+            previous_best = float(np.min(y[:-window]))
+            recent_best = float(np.min(y[-window:]))
+            rel = self._safe_relative_improvement(previous_best, min(previous_best, recent_best))
+            recent_mean = float(np.mean(y[-window:]))
+            recent_std = float(np.std(y[-window:]))
+            return rel, recent_mean, recent_std
+
+        imp10, recent10_mean, recent10_std = window_improvement(10)
+        imp50, recent50_mean, recent50_std = window_improvement(50)
+
+        best_idx = int(np.argmin(y))
+        since_best = float(max(len(y) - 1 - best_idx, 0))
+        budget = float(self.config.max_true_evals or max(evals_used, len(y), 1.0))
+
+        return [
+            float(len(y)),
+            current_best,
+            finite_incumbent - current_best,
+            mean_y,
+            std_y,
+            recent10_mean,
+            recent10_std,
+            imp10,
+            recent50_mean,
+            recent50_std,
+            imp50,
+            since_best / max(budget, 1.0),
+        ]
+
+    def _candidate_distribution_features(
+        self,
+        *,
+        candidate_x: np.ndarray,
+        incumbent_x: np.ndarray,
+    ) -> list[float]:
+        cand = self._sanitize_array(np.asarray(candidate_x, dtype=np.float32))
+        if cand.ndim != 2 or cand.shape[0] == 0:
+            return [0.0] * 8
+
+        incumbent = self._sanitize_array(np.asarray(incumbent_x, dtype=np.float32).reshape(-1))
+        if incumbent.ndim != 1 or len(incumbent) != cand.shape[1]:
+            incumbent = np.zeros((cand.shape[1],), dtype=np.float32)
+
+        deltas = cand - incumbent[None, :]
+        distances = np.linalg.norm(deltas, axis=1)
+        coord_std = np.std(cand, axis=0)
+        delta_abs = np.abs(deltas)
+
+        return [
+            float(np.mean(distances)),
+            float(np.std(distances)),
+            float(np.min(distances)),
+            float(np.max(distances)),
+            float(np.mean(coord_std)),
+            float(np.max(coord_std)),
+            float(np.mean(delta_abs)),
+            float(np.max(delta_abs)),
+        ]
 
     def _build_context_features(
         self,
@@ -365,7 +519,7 @@ class PFNDecisionModel(DecisionModel):
             from ..stubs.decision_models import PFNBackboneConfig, SetConditionedPFNBackbone
 
             context_dim = int(checkpoint["context_dim"])
-            candidate_dim = int(checkpoint["candidate_dim"])
+            candidate_dim = int(checkpoint.get("candidate_dim", checkpoint.get("query_dim")))
 
             raw_backbone_config = checkpoint.get("backbone_config", {})
             if raw_backbone_config is None:
@@ -377,13 +531,19 @@ class PFNDecisionModel(DecisionModel):
                 hidden_dim=int(raw_backbone_config.get("hidden_dim", 256)),
                 num_heads=int(raw_backbone_config.get("num_heads", 8)),
                 num_context_layers=int(raw_backbone_config.get("num_context_layers", 4)),
-                num_candidate_layers=int(raw_backbone_config.get("num_candidate_layers", 2)),
+                num_candidate_layers=int(
+                    raw_backbone_config.get(
+                        "num_candidate_layers",
+                        raw_backbone_config.get("num_query_layers", 2),
+                    )
+                ),
                 num_action_layers=int(raw_backbone_config.get("num_action_layers", 2)),
                 ff_multiplier=int(raw_backbone_config.get("ff_multiplier", 4)),
                 dropout=float(raw_backbone_config.get("dropout", 0.1)),
                 activation=str(raw_backbone_config.get("activation", "gelu")),
                 use_type_embeddings=bool(raw_backbone_config.get("use_type_embeddings", True)),
                 max_action_tokens=int(raw_backbone_config.get("max_action_tokens", 64)),
+                use_action_features=bool(raw_backbone_config.get("use_action_features", False)),
             )
 
             model = SetConditionedPFNBackbone(
