@@ -53,7 +53,10 @@ class DatasetGenerationController:
         artifacts: dict[str, BundleGenerationArtifacts] = {}
         scores: dict[str, float] = {}
 
+        optimizer_state = optimizer.get_state()
         for bundle in bundles:
+            if hasattr(bundle.surrogate, "set_optimizer_state"):
+                bundle.surrogate.set_optimizer_state(optimizer_state)
             surrogate_population = bundle.surrogate.predict(history_x, history_y, candidate_x)
             ec_result = bundle.evolution_control.select_and_evaluate(surrogate_population, objective)
 
@@ -106,7 +109,7 @@ class DatasetGenerationController:
             incumbent_x=incumbent_x,
             incumbent_y=float(incumbent_y),
             surrogate_scores=scores,
-            optimizer_state=optimizer.get_state(),
+            optimizer_state=optimizer_state,
             metadata={
                 "lookahead_best_y": {name: art.lookahead_best_y for name, art in artifacts.items()},
                 "real_generation_best_y": float(real_population.best_y),

@@ -11,6 +11,7 @@ from ..types import SurrogatePopulation
 
 SelectionMode = Literal["recent", "nearest", "hybrid", "all"]
 PredictionMode = Literal["mean", "median"]
+CoordinateMode = Literal["raw", "standardized", "cma_whitened"]
 
 
 def _as_2d_float32(x: np.ndarray, name: str) -> np.ndarray:
@@ -62,14 +63,14 @@ def _select_subset(
     train_y: np.ndarray,
     query_x: np.ndarray,
     max_train_size: int,
-    max_train_size_ratio: float,
+    max_train_size_ratio: float | None,
     selection_mode: SelectionMode,
     recent_fraction: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     n = len(train_x)
 
     if max_train_size_ratio is not None and 0.0 < max_train_size_ratio < 1.0:
-        max_train_size = int(round(n * max_train_size_ratio))
+        max_train_size = max(1, int(round(n * max_train_size_ratio)))
 
     if max_train_size <= 0:
         raise ValueError("max_train_size must be positive.")
@@ -126,20 +127,24 @@ def _select_subset(
     return train_x[idx], train_y[idx]
 
 
+def _safe_eigendecomposition(covariance: np.ndarray, min_eigenvalue: float) -> tuple[np.ndarray, np.ndarray]:
+    covariance = np.asarray(covariance, dtype=float)
+    covariance = 0.5 * (covariance + covariance.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    eigenvalues = np.maximum(eigenvalues, float(min_eigenvalue))
+    return eigenvalues, eigenvectors
+
+
 @dataclass(slots=True)
 class TabPFNSurrogate(SurrogateModel):
     """
     Pretrained TabPFN regression surrogate for CMA-ES.
 
-    Input:
-        history_x: evaluated points, shape [N, D]
-        history_y: objective values, shape [N]
-        query_x: candidate CMA-ES population, shape [Q, D]
-
-    Output:
-        SurrogatePopulation with predicted objective values for query_x.
-
-    Lower y_pred is assumed to be better.
+    New options added for ill-conditioned functions:
+    - coordinate_mode="cma_whitened" maps x to z=C^(-1/2)(x-m)/sigma using the
+      current CMA-ES state before selecting the local training set and calling TabPFN.
+    - trust-region distances in the same z-space are exported in metadata for
+      evolution controls that want to avoid surrogate extrapolation.
     """
 
     min_train_size: int = 5
@@ -148,7 +153,7 @@ class TabPFNSurrogate(SurrogateModel):
     selection_mode: SelectionMode = "hybrid"
     recent_fraction: float = 0.35
 
-    target_mode: str = "reg"#"rank"
+    target_mode: str = "reg"
 
     device: str = "auto"
     random_state: int = 0
@@ -164,9 +169,17 @@ class TabPFNSurrogate(SurrogateModel):
     fallback_to_incumbent: bool = True
     raise_on_error: bool = True
 
+    # Coordinate handling for covariance-aware TabPFN-CMA-ES.
+    coordinate_mode: CoordinateMode = "raw"
+    covariance_jitter: float = 1e-12
+    min_sigma: float = 1e-12
+    standardize_x_eps: float = 1e-12
+
     tabpfn_kwargs: dict[str, Any] = field(default_factory=dict)
 
     _model: Any = field(init=False, repr=False, default=None)
+    _optimizer_state: dict[str, Any] | None = field(init=False, repr=False, default=None)
+    _last_transform_metadata: dict[str, Any] = field(init=False, repr=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.min_train_size < 1:
@@ -181,7 +194,14 @@ class TabPFNSurrogate(SurrogateModel):
         if len(self.quantiles) != 2 or not self.quantiles[0] < self.quantiles[1]:
             raise ValueError("quantiles must be a tuple like (0.16, 0.84).")
 
+        if self.coordinate_mode not in ("raw", "standardized", "cma_whitened"):
+            raise ValueError("coordinate_mode must be one of: raw, standardized, cma_whitened")
+
         self._model = self._create_model()
+
+    def set_optimizer_state(self, optimizer_state: dict[str, Any] | None) -> None:
+        """Called by the experiment loop before predict()."""
+        self._optimizer_state = dict(optimizer_state or {})
 
     def _create_model(self):
         from tabpfn import TabPFNRegressor
@@ -214,12 +234,71 @@ class TabPFNSurrogate(SurrogateModel):
 
         return float(np.mean(train_y))
 
+    def _transform_inputs(
+        self,
+        train_x: np.ndarray,
+        query_x: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return transformed train/query inputs and query trust-region distances."""
+        self._last_transform_metadata = {"coordinate_mode": self.coordinate_mode}
+        dim = int(query_x.shape[1])
+
+        if self.coordinate_mode == "raw":
+            query_dist = np.linalg.norm(query_x - np.mean(query_x, axis=0, keepdims=True), axis=1)
+            return train_x, query_x, query_dist.astype(float)
+
+        if self.coordinate_mode == "standardized":
+            if len(train_x) > 0:
+                center = np.mean(train_x, axis=0)
+                scale = np.std(train_x, axis=0)
+            else:
+                center = np.mean(query_x, axis=0)
+                scale = np.std(query_x, axis=0)
+            scale = np.maximum(scale, self.standardize_x_eps)
+            train_z = (train_x - center[None, :]) / scale[None, :]
+            query_z = (query_x - center[None, :]) / scale[None, :]
+            query_dist = np.linalg.norm(query_z, axis=1)
+            self._last_transform_metadata.update({
+                "x_center_source": "history" if len(train_x) > 0 else "query",
+                "x_scale_min": float(np.min(scale)),
+                "x_scale_max": float(np.max(scale)),
+            })
+            return train_z.astype(np.float32), query_z.astype(np.float32), query_dist.astype(float)
+
+        # CMA-whitened coordinates: z = C^{-1/2} (x - m) / sigma.
+        state = self._optimizer_state or {}
+        mean = np.asarray(state.get("mean", np.mean(query_x, axis=0)), dtype=float).reshape(-1)
+        covariance = np.asarray(state.get("covariance", np.eye(dim)), dtype=float)
+        sigma = max(float(state.get("sigma", 1.0)), self.min_sigma)
+
+        if mean.size != dim:
+            mean = np.mean(query_x, axis=0)
+        if covariance.shape != (dim, dim):
+            covariance = np.eye(dim, dtype=float)
+
+        eigenvalues, eigenvectors = _safe_eigendecomposition(covariance, self.covariance_jitter)
+        inv_sqrt = eigenvectors @ np.diag(1.0 / np.sqrt(eigenvalues)) @ eigenvectors.T
+
+        train_z = ((train_x - mean[None, :]) / sigma) @ inv_sqrt.T
+        query_z = ((query_x - mean[None, :]) / sigma) @ inv_sqrt.T
+        query_dist = np.linalg.norm(query_z, axis=1)
+
+        self._last_transform_metadata.update({
+            "sigma": float(sigma),
+            "cov_eig_min": float(np.min(eigenvalues)),
+            "cov_eig_max": float(np.max(eigenvalues)),
+            "cov_condition": float(np.max(eigenvalues) / max(np.min(eigenvalues), self.covariance_jitter)),
+            "query_mahalanobis_min": float(np.min(query_dist)) if len(query_dist) else 0.0,
+            "query_mahalanobis_max": float(np.max(query_dist)) if len(query_dist) else 0.0,
+        })
+        return train_z.astype(np.float32), query_z.astype(np.float32), query_dist.astype(float)
+
     def _prepare_training_data(
         self,
         history_x: np.ndarray,
         history_y: np.ndarray,
         query_x: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         train_x = _as_2d_float32(history_x, "history_x")
         train_y = _as_1d_float32(history_y, "history_y")
         query_x = _as_2d_float32(query_x, "query_x")
@@ -236,17 +315,19 @@ class TabPFNSurrogate(SurrogateModel):
                 f"got {train_x.shape[1]} and {query_x.shape[1]}."
             )
 
-        train_x, train_y = _select_subset(
-            train_x=train_x,
+        train_x_transformed, query_x_transformed, query_distances = self._transform_inputs(train_x, query_x)
+
+        train_x_selected, train_y_selected = _select_subset(
+            train_x=train_x_transformed,
             train_y=train_y,
-            query_x=query_x,
+            query_x=query_x_transformed,
             max_train_size=self.max_train_size,
             max_train_size_ratio=self.max_train_size_ratio,
             selection_mode=self.selection_mode,
             recent_fraction=self.recent_fraction,
         )
 
-        return train_x, train_y, query_x
+        return train_x_selected, train_y_selected, query_x_transformed, query_distances
 
     def _normalize_targets(self, train_y: np.ndarray) -> tuple[np.ndarray, float, float]:
         if self.target_mode == "rank":
@@ -335,41 +416,42 @@ class TabPFNSurrogate(SurrogateModel):
         history_y: np.ndarray,
         query_x: np.ndarray,
     ) -> SurrogatePopulation:
-        query_x_arr = np.asarray(query_x, dtype=np.float32)
+        query_x_original = np.asarray(query_x, dtype=np.float32)
 
-        if query_x_arr.ndim != 2:
-            raise ValueError(f"query_x must have shape [Q, D], got {query_x_arr.shape}")
+        if query_x_original.ndim != 2:
+            raise ValueError(f"query_x must have shape [Q, D], got {query_x_original.shape}")
 
-        if len(query_x_arr) == 0:
+        if len(query_x_original) == 0:
             return SurrogatePopulation(
-                x=query_x_arr.astype(float),
+                x=query_x_original.astype(float),
                 y_pred=np.zeros(0, dtype=float),
                 uncertainty=np.zeros(0, dtype=float),
                 metadata={
                     "surrogate_type": "tabpfn_regressor",
                     "empty_query": True,
+                    "coordinate_mode": self.coordinate_mode,
                 },
             )
-    
+
         history_y_arr = np.asarray(history_y, dtype=np.float32).reshape(-1)
 
         if len(history_y_arr) < self.min_train_size:
             return _fallback_population(
-                query_x=query_x_arr,
+                query_x=query_x_original,
                 value=self._fallback_value(history_y_arr),
                 reason=f"not_enough_training_points:{len(history_y_arr)}",
             )
 
         try:
-            train_x, train_y, query_x_arr = self._prepare_training_data(
+            train_x, train_y, query_x_transformed, query_distances = self._prepare_training_data(
                 history_x,
                 history_y,
-                query_x_arr,
+                query_x_original,
             )
 
             if len(train_x) < self.min_train_size:
                 return _fallback_population(
-                    query_x=query_x_arr,
+                    query_x=query_x_original,
                     value=self._fallback_value(train_y),
                     reason=f"not_enough_training_points:{len(train_x)}",
                 )
@@ -379,31 +461,36 @@ class TabPFNSurrogate(SurrogateModel):
             pred = self._predict_mean(
                 train_x=train_x,
                 fit_y=fit_y,
-                query_x=query_x_arr,
+                query_x=query_x_transformed,
                 y_mean=y_mean,
                 y_std=y_std,
             )
 
             uncertainty = self._predict_uncertainty(
-                query_x=query_x_arr,
+                query_x=query_x_transformed,
                 y_mean=y_mean,
                 y_std=y_std,
             )
 
+            metadata = {
+                "surrogate_type": "tabpfn_regressor",
+                "fallback": False,
+                "train_size": int(len(train_x)),
+                "dimension": int(train_x.shape[1]),
+                "selection_mode": self.selection_mode,
+                "normalized_y": bool(self.normalize_y),
+                "prediction_mode": self.prediction_mode,
+                "return_uncertainty": bool(self.return_uncertainty),
+                "coordinate_mode": self.coordinate_mode,
+                "query_trust_distances": np.asarray(query_distances, dtype=float).tolist(),
+            }
+            metadata.update(self._last_transform_metadata)
+
             return SurrogatePopulation(
-                x=query_x_arr.astype(float, copy=False),
+                x=query_x_original.astype(float, copy=False),
                 y_pred=np.asarray(pred, dtype=float),
                 uncertainty=np.asarray(uncertainty, dtype=float),
-                metadata={
-                    "surrogate_type": "tabpfn_regressor",
-                    "fallback": False,
-                    "train_size": int(len(train_x)),
-                    "dimension": int(train_x.shape[1]),
-                    "selection_mode": self.selection_mode,
-                    "normalized_y": bool(self.normalize_y),
-                    "prediction_mode": self.prediction_mode,
-                    "return_uncertainty": bool(self.return_uncertainty),
-                },
+                metadata=metadata,
             )
 
         except Exception as exc:
@@ -412,7 +499,7 @@ class TabPFNSurrogate(SurrogateModel):
 
             train_y = np.asarray(history_y, dtype=float).reshape(-1)
             return _fallback_population(
-                query_x=query_x_arr,
+                query_x=query_x_original,
                 value=self._fallback_value(train_y),
                 reason=f"exception:{type(exc).__name__}:{exc}",
             )

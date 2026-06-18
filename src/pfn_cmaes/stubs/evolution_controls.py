@@ -422,3 +422,181 @@ class DoublyTrainedControl(EvolutionControl):
                 "num_surrogate": int(n - k),
             },
         )
+
+
+class TrustRegionAdaptiveRankControl(EvolutionControl):
+    """
+    Covariance-aware evolution control for the TabPFN surrogate.
+
+    It combines three safeguards:
+    1. evaluate the predicted top fraction truly,
+    2. force true evaluation outside the surrogate trust region, using distances
+       exported by TabPFNSurrogate metadata (CMA-whitened Mahalanobis distance),
+    3. adapt the future true-evaluation fraction based on rank agreement on the
+       truly evaluated subset.
+
+    Lower objective values are assumed to be better.
+    """
+
+    def __init__(
+        self,
+        top_fraction: float = 0.5,
+        min_top_fraction: float = 0.2,
+        max_top_fraction: float = 1.0,
+        adaptation_step: float = 0.1,
+        good_agreement_threshold: float = 0.75,
+        bad_agreement_threshold: float = 0.55,
+        trust_region_radius: float | None = None,
+        min_validation_points: int = 2,
+        uncertainty_fraction: float = 0.0,
+        random_state: int = 0,
+    ) -> None:
+        if not (0.0 < top_fraction <= 1.0):
+            raise ValueError("top_fraction must satisfy 0 < top_fraction <= 1")
+        if not (0.0 < min_top_fraction <= 1.0):
+            raise ValueError("min_top_fraction must satisfy 0 < min_top_fraction <= 1")
+        if not (0.0 < max_top_fraction <= 1.0):
+            raise ValueError("max_top_fraction must satisfy 0 < max_top_fraction <= 1")
+        if min_top_fraction > max_top_fraction:
+            raise ValueError("min_top_fraction must be <= max_top_fraction")
+        if not (0.0 <= uncertainty_fraction <= 1.0):
+            raise ValueError("uncertainty_fraction must satisfy 0 <= uncertainty_fraction <= 1")
+
+        self.initial_top_fraction = float(top_fraction)
+        self.current_top_fraction = float(np.clip(top_fraction, min_top_fraction, max_top_fraction))
+        self.min_top_fraction = float(min_top_fraction)
+        self.max_top_fraction = float(max_top_fraction)
+        self.adaptation_step = float(adaptation_step)
+        self.good_agreement_threshold = float(good_agreement_threshold)
+        self.bad_agreement_threshold = float(bad_agreement_threshold)
+        self.trust_region_radius = None if trust_region_radius is None else float(trust_region_radius)
+        self.min_validation_points = int(max(0, min_validation_points))
+        self.uncertainty_fraction = float(uncertainty_fraction)
+        self.rng = np.random.default_rng(random_state)
+        self.last_rank_agreement: float | None = None
+        self.generation_index = 0
+
+    @staticmethod
+    def _rank_agreement(predicted: np.ndarray, realized: np.ndarray) -> float:
+        if len(predicted) <= 1:
+            return 1.0
+        pred_rank = np.argsort(np.argsort(np.asarray(predicted, dtype=float), kind="stable"), kind="stable")
+        real_rank = np.argsort(np.argsort(np.asarray(realized, dtype=float), kind="stable"), kind="stable")
+        corr = np.corrcoef(pred_rank, real_rank)[0, 1]
+        if not np.isfinite(corr):
+            return 0.0
+        return float(corr)
+
+    def _adapt(self, agreement: float | None) -> None:
+        if agreement is None or not np.isfinite(agreement):
+            return
+        if agreement >= self.good_agreement_threshold:
+            self.current_top_fraction = max(
+                self.min_top_fraction,
+                self.current_top_fraction - self.adaptation_step,
+            )
+        elif agreement <= self.bad_agreement_threshold:
+            self.current_top_fraction = min(
+                self.max_top_fraction,
+                self.current_top_fraction + self.adaptation_step,
+            )
+
+    def select_and_evaluate(
+        self,
+        surrogate_population: SurrogatePopulation,
+        objective: ObjectiveFunction,
+    ) -> EvolutionControlResult:
+        n = len(surrogate_population.y_pred)
+        if n == 0:
+            dim = int(surrogate_population.x.shape[1]) if surrogate_population.x.ndim == 2 else 0
+            empty_true = EvaluatedPopulation(
+                x=np.empty((0, dim), dtype=float),
+                y=np.empty((0,), dtype=float),
+            )
+            empty_sur = _empty_surrogate_population(dim)
+            return EvolutionControlResult(empty_true, empty_sur, empty_true, metadata={"ec_type": "trust_region_adaptive_rank", "empty": True})
+
+        x = np.asarray(surrogate_population.x, dtype=float)
+        y_pred = np.asarray(surrogate_population.y_pred, dtype=float).reshape(-1)
+        order = np.argsort(y_pred, kind="stable")
+        x_ord = x[order]
+        y_pred_ord = y_pred[order]
+
+        chosen_mask = np.zeros(n, dtype=bool)
+        k_top = max(1, int(np.ceil(self.current_top_fraction * n)))
+        chosen_mask[:k_top] = True
+
+        uncertainty = getattr(surrogate_population, "uncertainty", None)
+        if uncertainty is not None and self.uncertainty_fraction > 0.0:
+            uncertainty_ord = np.asarray(uncertainty, dtype=float).reshape(-1)[order]
+            k_unc = int(np.ceil(self.uncertainty_fraction * n))
+            if k_unc > 0:
+                chosen_mask[np.argsort(-uncertainty_ord, kind="stable")[:k_unc]] = True
+
+        trust_distances = None
+        raw_distances = surrogate_population.metadata.get("query_trust_distances") if surrogate_population.metadata else None
+        if raw_distances is not None:
+            trust_distances = np.asarray(raw_distances, dtype=float).reshape(-1)[order]
+
+        num_outside_trust = 0
+        if self.trust_region_radius is not None and trust_distances is not None and len(trust_distances) == n:
+            outside = trust_distances > self.trust_region_radius
+            num_outside_trust = int(np.sum(outside))
+            chosen_mask |= outside
+
+        if self.min_validation_points > 0:
+            available = np.flatnonzero(~chosen_mask)
+            need = max(0, self.min_validation_points - int(np.sum(chosen_mask)))
+            if need > 0 and len(available) > 0:
+                val = self.rng.choice(available, size=min(need, len(available)), replace=False)
+                chosen_mask[val] = True
+
+        true_x = x_ord[chosen_mask]
+        true_y = np.asarray([objective(candidate) for candidate in true_x], dtype=float)
+        true_pop = EvaluatedPopulation(x=true_x, y=true_y).sorted()
+
+        surrogate_x = x_ord[~chosen_mask]
+        surrogate_y = y_pred_ord[~chosen_mask]
+        surrogate_pop = SurrogatePopulation(x=surrogate_x, y_pred=surrogate_y)
+
+        # Compute agreement in the ordered coordinate frame, before sorting true_pop.
+        agreement = None
+        if len(true_y) >= 2:
+            agreement = self._rank_agreement(y_pred_ord[chosen_mask], true_y)
+            self.last_rank_agreement = agreement
+            self._adapt(agreement)
+
+        merged = _stack_merge_true_and_surrogate(
+            true_x=true_x,
+            true_y=true_y,
+            surrogate_x=surrogate_x,
+            surrogate_y=surrogate_y,
+        )
+
+        metadata = {
+            "ec_type": "trust_region_adaptive_rank",
+            "top_fraction_used": float(k_top / n),
+            "current_top_fraction_next": float(self.current_top_fraction),
+            "min_top_fraction": float(self.min_top_fraction),
+            "max_top_fraction": float(self.max_top_fraction),
+            "rank_agreement": None if agreement is None else float(agreement),
+            "trust_region_radius": self.trust_region_radius,
+            "num_outside_trust": int(num_outside_trust),
+            "num_true": int(chosen_mask.sum()),
+            "num_surrogate": int((~chosen_mask).sum()),
+            "coordinate_mode": surrogate_population.metadata.get("coordinate_mode") if surrogate_population.metadata else None,
+        }
+        if trust_distances is not None and len(trust_distances) == n:
+            metadata.update({
+                "trust_distance_min": float(np.min(trust_distances)),
+                "trust_distance_max": float(np.max(trust_distances)),
+                "trust_distance_mean": float(np.mean(trust_distances)),
+            })
+
+        self.generation_index += 1
+        return EvolutionControlResult(
+            true_evaluated=true_pop,
+            surrogate_evaluated=surrogate_pop,
+            merged_ranking=merged,
+            metadata=metadata,
+        )

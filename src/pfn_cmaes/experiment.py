@@ -75,6 +75,7 @@ class PFNSurrogateExperiment:
                     dataset_scores={name: art.score for name, art in artifacts.items()},
                     metadata={
                         "optimizer_state_after": optimizer.get_state(),
+                        "optimizer_state_before": optimizer.get_state(),
                         "counterfactual_lookahead_best_y": {
                             name: art.lookahead_best_y for name, art in artifacts.items()
                         },
@@ -88,6 +89,9 @@ class PFNSurrogateExperiment:
                     optimizer_state=optimizer.get_state(),
                     generation_index=generation_index,
                 )
+                optimizer_state_before = optimizer.get_state()
+                if hasattr(chosen_bundle.surrogate, "set_optimizer_state"):
+                    chosen_bundle.surrogate.set_optimizer_state(optimizer_state_before)
                 surrogate_population = chosen_bundle.surrogate.predict(history.x, history.y, candidate_x)
                 ec_result = chosen_bundle.evolution_control.select_and_evaluate(surrogate_population, objective)
                 optimizer.tell(ec_result.merged_ranking.x, ec_result.merged_ranking.y)
@@ -116,6 +120,7 @@ class PFNSurrogateExperiment:
                         "decision_metadata": decision.metadata,
                         "ec_metadata": ec_result.metadata,
                         "optimizer_state_after": optimizer.get_state(),
+                        "optimizer_state_before": optimizer_state_before,
                     },
                 )
 
